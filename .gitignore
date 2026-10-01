@@ -15,3 +15,7 @@ build/
 # Environment files
 .env
 .env.*
+
+# Fare data (downloaded, large)
+data/
+__pycache__/
