@@ -17,6 +17,14 @@ npm start        # http://localhost:8080
 npm test         # unit tests for the budget maths (Node's built-in test runner)
 ```
 
+### Use it on your phone
+
+The repo deploys itself with GitHub Pages (`.github/workflows/pages.yml`). One-time setup: in the repository go to **Settings → Pages → Build and deployment → Source: GitHub Actions**, then merge to `main`. The app appears at `https://<your-user>.github.io/project-starter/`.
+
+Open that link on your phone, then **iPhone:** Safari → Share → *Add to Home Screen*. **Android:** Chrome → menu → *Install app*. It then opens full screen like a native app and works offline.
+
+To try it on your phone before publishing, run `npm start` and open `http://<your-computer-ip>:8080` while both are on the same Wi-Fi (works in the browser; installing and offline mode need HTTPS).
+
 There is no build step: it is plain HTML, CSS and ES modules. Host the folder on any static host (GitHub Pages, Netlify, Cloudflare Pages…). Over HTTPS, open it on your phone and use **Share → Add to Home Screen** (iOS) or **Install app** (Android/desktop Chrome).
 
 ## Layout
