@@ -11,21 +11,25 @@
 // Crons: every 15 minutes re-check the channels that are due; hourly scan one niche that is due.
 // Both send Telegram alerts for new breakouts.
 import { analyseVideo } from '../public/js/analyse.js';
-import { nicheQuery, scanNiche } from '../public/js/discover.js';
+import { nicheExcludes, nicheQuery, scanNiche } from '../public/js/discover.js';
 import { DEFAULT_MODEL } from '../public/js/gemini.js';
 import {
   channelToRow, discoveryToRow, pseudoChannel, rowToChannel, rowToNiche, rowToVideo, settingsFromProfile, videoToRow,
 } from '../public/js/rows.js';
 import { matchesLanguage } from '../public/js/lang.js';
-import { shouldAlert } from '../public/js/score.js';
+import { isOutlier, shouldAlert } from '../public/js/score.js';
+import { addSnapshot, velocity, withStats } from '../public/js/trend.js';
 import { refreshChannel } from '../public/js/tracker.js';
 import { YouTubeError, ytClient } from '../public/js/youtube.js';
-import { alertMessage, analysisMessage, tg, webhookSecret } from './telegram.js';
+import { alertMessage, analysisMessage, risingMessage, tg, webhookSecret } from './telegram.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MANUAL_REFRESH_MINUTES = 10;
 const MANUAL_SCAN_MINUTES = 30;
 export const NICHE_CRON = '7 * * * *';
+export const STATS_CRON = '22,52 * * * *';
+/** Recent candidates whose view counts are re-read per run (1 YouTube unit per 50). */
+const STATS_BATCH = 50;
 const MAX_ALERTS_PER_CHANNEL = 3;
 const LINK_CODE_MINUTES = 60;
 
@@ -99,11 +103,15 @@ export async function processChannel(env, row, { settings, chatId = null, seed =
   const [chRow] = await sb(env, `channels?id=eq.${row.id}`, { method: 'PATCH', body: channelToRow(out.channel), prefer: 'return=representation' });
   let videoRows = [];
   if (out.videos.length) {
+    const prior = new Map((await sb(env, `videos?select=yt_video_id,snapshots&user_id=eq.${row.user_id}&channel_id=eq.${row.id}`))
+      .map((r) => [r.yt_video_id, r.snapshots]));
     videoRows = await sb(env, 'videos?on_conflict=user_id,yt_video_id', {
       method: 'POST',
       prefer: 'resolution=merge-duplicates,return=representation',
       body: out.videos.map((v) => ({
         ...videoToRow(v), user_id: row.user_id, channel_id: row.id, updated_at: nowIso,
+        channel_title: out.channel.title, baseline: v.isShort ? out.channel.baselineShort : out.channel.baselineLong,
+        snapshots: addSnapshot(prior.get(v.ytVideoId), v.views, now),
         ...(seed ? { alerted_at: v.isOutlier ? nowIso : null } : {}),
       })),
     });
@@ -132,19 +140,21 @@ async function sendAlerts(env, videos, { chatId, settings, now, channelFor, labe
 export async function processNiche(env, niche, { settings, chatId = null, now = Date.now() }) {
   const nowIso = new Date(now).toISOString();
   const tracked = new Set((await sb(env, `channels?select=yt_channel_id&user_id=eq.${niche.user_id}`)).map((c) => c.yt_channel_id));
-  const found = (await scanNiche(ytClient(env.YOUTUBE_API_KEY), nicheQuery(niche), { now, settings }))
+  const found = (await scanNiche(ytClient(env.YOUTUBE_API_KEY), nicheQuery(niche), { now, settings, exclude: nicheExcludes(niche) }))
     .filter((v) => !tracked.has(v.ytChannelId));
   const seed = !niche.scanned_at; // the first scan's finds are not "new", so no alert flood
   let rows = [];
   if (found.length) {
     // A video can belong to several niches (e.g. "history" and "ww2"): keep the niches it already has.
-    const existing = await sb(env, `videos?select=yt_video_id,niche_ids&user_id=eq.${niche.user_id}&yt_video_id=in.(${found.map((v) => v.ytVideoId).join(',')})`);
+    const existing = await sb(env, `videos?select=yt_video_id,niche_ids,snapshots&user_id=eq.${niche.user_id}&yt_video_id=in.(${found.map((v) => v.ytVideoId).join(',')})`);
     const had = new Map(existing.map((r) => [r.yt_video_id, r.niche_ids || []]));
+    const prior = new Map(existing.map((r) => [r.yt_video_id, r.snapshots]));
     rows = await sb(env, 'videos?on_conflict=user_id,yt_video_id', {
       method: 'POST',
       prefer: 'resolution=merge-duplicates,return=representation',
       body: found.map((v) => ({
         ...discoveryToRow(v), user_id: niche.user_id, niche_ids: [...new Set([...(had.get(v.ytVideoId) ?? []), niche.id])], updated_at: nowIso,
+        snapshots: addSnapshot(prior.get(v.ytVideoId), v.views, now),
         ...(seed ? { alerted_at: v.isOutlier ? nowIso : null } : {}),
       })),
     });
@@ -153,6 +163,49 @@ export async function processNiche(env, niche, { settings, chatId = null, now = 
   const videos = rows.map(rowToVideo);
   const alerted = seed ? 0 : await sendAlerts(env, videos, { chatId, settings, now, channelFor: pseudoChannel, label: niche.name });
   return { niche: rowToNiche({ ...niche, scanned_at: nowIso }), videos, alerted };
+}
+
+/**
+ * "Rising now": re-reads the view counts of recent candidates (oldest-checked first), adds a snapshot,
+ * re-scores them against their stored baseline, and alerts once when an outlier starts gaining views
+ * faster than its own average. One YouTube call per 50 videos.
+ */
+export async function refreshStats(env, { userId = null, now = Date.now(), settingsByUser = null, chatByUser = null } = {}) {
+  if (!cloudReady(env)) return { updated: 0, rising: 0 };
+  const since = new Date(now - 14 * 864e5).toISOString();
+  const stale = new Date(now - 25 * 6e4).toISOString();
+  const rows = await sb(env, `videos?select=*${userId ? `&user_id=eq.${userId}` : ''}&score=gte.1.5&published_at=gte.${since}&updated_at=lt.${stale}&order=updated_at.asc&limit=${STATS_BATCH}`);
+  if (!rows.length) return { updated: 0, rising: 0 };
+  const fresh = new Map((await ytClient(env.YOUTUBE_API_KEY).videos(rows.map((r) => r.yt_video_id))).map((f) => [f.ytVideoId, f]));
+  const users = [...new Set(rows.map((r) => r.user_id))];
+  if (!settingsByUser) {
+    const profiles = await sb(env, `profiles?select=*&user_id=in.(${users.join(',')})`);
+    settingsByUser = new Map(users.map((u) => [u, settingsFromProfile(profiles.find((p) => p.user_id === u) ?? {})]));
+  }
+  if (!chatByUser) {
+    const links = telegramReady(env) ? await sb(env, `telegram_links?select=user_id,chat_id&user_id=in.(${users.join(',')})&chat_id=not.is.null`) : [];
+    chatByUser = new Map(links.map((l) => [l.user_id, l.chat_id]));
+  }
+  const nowIso = new Date(now).toISOString();
+  const updated = [];
+  let rising = 0;
+  for (const r of rows) {
+    const f = fresh.get(r.yt_video_id);
+    const v = withStats(rowToVideo(r), f ?? {}, now);
+    const settings = settingsByUser.get(r.user_id);
+    const out = { id: r.id, user_id: r.user_id, yt_video_id: r.yt_video_id, published_at: r.published_at, views: v.views, likes: v.likes, comments: v.comments,
+      score: v.score, is_outlier: isOutlier(v, v.score, settings), snapshots: v.snapshots, updated_at: nowIso };
+    const chatId = chatByUser.get(r.user_id);
+    if (f && !r.rising_alerted_at && out.is_outlier && velocity(v, now).rising && chatId && settings.alerts && telegramReady(env) && matchesLanguage(v, settings)) {
+      const sent = await tg(env, 'sendMessage', { chat_id: chatId, ...risingMessage({ ...v, id: r.id }, velocity(v, now), now) });
+      if (sent.ok) { out.rising_alerted_at = nowIso; rising++; }
+    }
+    updated.push(out);
+  }
+  // Same keys in every row, as PostgREST requires for a bulk upsert.
+  const body = updated.map((u) => ({ rising_alerted_at: rows.find((r) => r.id === u.id).rising_alerted_at ?? null, ...u }));
+  const saved = await sb(env, 'videos?on_conflict=id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=representation', body });
+  return { updated: saved.length, rising, videos: saved.map(rowToVideo) };
 }
 
 /** Only a user's first MAX_NICHES niches are scanned, to protect the shared quota. */
@@ -257,18 +310,22 @@ async function refresh(request, env, user) {
   }
   await sb(env, 'profiles?on_conflict=user_id', { method: 'POST', prefer: 'resolution=merge-duplicates', body: { user_id: user.id, last_refresh_at: new Date(now).toISOString() } });
   const filter = body.channelId && UUID_RE.test(body.channelId) ? `&id=eq.${body.channelId}` : '';
-  const rows = await sb(env, `channels?select=*&user_id=eq.${user.id}${filter}&order=checked_at.asc.nullsfirst&limit=${limits(env).batch}`);
+  const rows = await sb(env, `channels?select=*&user_id=eq.${user.id}${filter}&order=checked_at.asc.nullsfirst&limit=${Math.min(5, limits(env).batch)}`);
   const settings = settingsFromProfile(profile ?? {});
   const chatId = telegramReady(env) ? await chatIdFor(env, user.id) : null;
   const results = [];
   const errors = [];
+  let statsVideos = [];
+  try {
+    statsVideos = (await refreshStats(env, { userId: user.id, now, settingsByUser: new Map([[user.id, settings]]), chatByUser: new Map([[user.id, chatId]]) })).videos ?? [];
+  } catch (e) { errors.push(e.message); }
   for (const row of rows) {
     try { results.push(await processChannel(env, row, { settings, chatId, now })); } catch (e) {
       errors.push(`${row.title}: ${e.message}`);
       if (e instanceof YouTubeError && /quota/i.test(e.message)) break;
     }
   }
-  return json({ channels: results.map((r) => r.channel), videos: results.flatMap((r) => r.videos), errors });
+  return json({ channels: results.map((r) => r.channel), videos: [...statsVideos, ...results.flatMap((r) => r.videos)], errors });
 }
 
 async function scanNicheNow(request, env, user) {
@@ -442,7 +499,7 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    const job = event.cron === NICHE_CRON ? runNicheScan : runScheduled;
+    const job = event.cron === NICHE_CRON ? runNicheScan : event.cron === STATS_CRON ? (e, t) => refreshStats(e, { now: t }) : runScheduled;
     ctx.waitUntil(job(env, event.scheduledTime).then((r) => console.log('cron', event.cron, JSON.stringify(r))));
   },
 };

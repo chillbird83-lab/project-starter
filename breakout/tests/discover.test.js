@@ -75,3 +75,19 @@ test('a big channel whose Shorts all get millions is not called an outlier', asy
   const found = await scanNiche(ytClient('KEY', fetchImpl), 'marvel', { now: NOW });
   assert.ok(found.every((v) => !v.isOutlier), JSON.stringify(found.map((v) => [v.ytVideoId, v.score])));
 });
+
+test('left-out words go into the search and filter what comes back', async () => {
+  const { nicheQuery: q, isExcluded } = await import('../public/js/discover.js');
+  assert.equal(q({ keywords: 'history, ww2', exclude: 'Marvel, anime , video game' }), 'history | ww2 -marvel -anime -"video game"');
+  assert.equal(isExcluded({ title: "Vision's MCU History (summarized by Vision)", tags: ['Marvel Studios'] }, ['marvel']), true);
+  assert.equal(isExcluded({ title: "Marvel's best moments" }, ['marvel']), true);
+  assert.equal(isExcluded({ title: 'Top 10 war movies' }, ['movie']), true);
+  assert.equal(isExcluded({ title: 'The art of war' }, ['art']), true);
+  assert.equal(isExcluded({ title: 'Article about the war' }, ['art']), false, 'short words match whole words only');
+  assert.equal(isExcluded({ title: 'Best video game history' }, ['video game']), true);
+  assert.equal(isExcluded({ title: 'Stalingrad 1942' }, []), false);
+  const { fetchImpl, calls } = fakeYouTube();
+  const found = await scanNiche(ytClient('KEY', fetchImpl), 'x', { now: NOW, exclude: ['routine'] });
+  assert.deepEqual(found.map((v) => v.ytVideoId), ['tinyhit0001']); // "I tried the 5am routine…" left out
+  assert.equal(calls.filter((u) => u.pathname.endsWith('/playlistItems')).length, 1, 'no quota spent checking its channel');
+});

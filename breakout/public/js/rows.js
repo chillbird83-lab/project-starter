@@ -34,10 +34,11 @@ export const rowToVideo = (r) => ({
   nicheIds: Array.isArray(r.niche_ids) ? r.niche_ids : [], ytChannelId: r.yt_channel_id || '', channelTitle: r.channel_title || '',
   channelSubs: r.channel_subs == null ? null : Number(r.channel_subs), baseline: Number(r.baseline) || 0,
   baselineKind: r.baseline_kind || 'median', source: r.source || 'channel', lang: r.lang || '',
+  snapshots: Array.isArray(r.snapshots) ? r.snapshots : [], risingAlertedAt: r.rising_alerted_at ?? null,
   analysis: r.analysis ?? null, analysedAt: r.analysed_at ?? null, saved: !!r.saved, updatedAt: r.updated_at,
 });
 
-export const rowToNiche = (r) => ({ id: r.id, name: r.name, keywords: r.keywords || '', scannedAt: r.scanned_at ?? null });
+export const rowToNiche = (r) => ({ id: r.id, name: r.name, keywords: r.keywords || '', exclude: r.exclude || '', scannedAt: r.scanned_at ?? null });
 
 /** A stand-in channel for a discovered video, so alerts and analysis can treat both kinds alike. */
 export const pseudoChannel = (v) => ({

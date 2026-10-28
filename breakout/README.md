@@ -29,6 +29,12 @@ It is an installable phone app (PWA) that runs on free tiers:
 - **Never show a language**: tap **Hide Hindi videos** (or any language) on a video, or manage the list in Settings. It applies even with "Any language" and to titles that only partly use that language.
 - Telegram alerts follow the same rules.
 
+**Leave out:** give a niche words to leave out, e.g. "history" without "marvel, anime". They're added to the YouTube search as `-marvel -anime` and checked again on what comes back (whole words and longer forms: "movie" also catches "movies").
+
+**Sort and channel size:** sort by highest score, rising fastest, most views or newest, and show only channels under 10K / 100K / 1M subscribers. A big outlier on a small channel is usually the easiest to learn from. Both choices are remembered on the device.
+
+**🔥 Rising now:** Breakout keeps a short view history for each candidate (up to 12 readings) and re-reads the view counts of recent outliers in batches (1 YouTube unit per 50 videos). The server does this twice an hour; in this-device mode it happens when you open the app or tap refresh. A video is **rising** when it's gaining views at least 1.2× faster than its own average since publishing. Most videos slow down over time, so speeding up means it has caught a second wind. Rising videos get a 🔥 badge with views per hour, and the video screen shows the speed now vs. its average with a small chart. With Telegram connected you get one "Rising now" alert per video.
+
 Tap a video to **play it inside the app** (YouTube's embedded player). A few videos have embedding turned off by their owner; use **Open in YouTube** for those.
 
 ## How outliers are scored
@@ -139,6 +145,7 @@ phone (PWA)
         └─ /telegram  link codes, webhook (/start, /stop, "Why did it work?" button)
   cron */15 min → channels due for a check → new breakouts → Telegram
   cron hourly   → one niche due for a search → new breakouts → Telegram
+  cron :22/:52  → re-read view counts of recent outliers → "Rising now" → Telegram
 ```
 
 | Path | Purpose |
@@ -147,6 +154,7 @@ phone (PWA)
 | `public/js/youtube.js` | YouTube client: parses any channel/video link, quota-aware calls, friendly errors |
 | `public/js/analyse.js` | Gemini prompt, response schema and clean-up for "Why did it work?" |
 | `public/js/tracker.js` | One channel check (3 units) |
+| `public/js/trend.js` | View history, views per hour, "rising" rule, re-scoring with fresh stats, sparkline |
 | `public/js/lang.js` | Video language: YouTube's field, else script / common-word detection; the feed filter |
 | `public/js/discover.js` | Niche scan: search → stats → lifetime-average score → re-check the top channels (≈130 units) |
 | `public/js/backend.js` | Cloud backend (Supabase over plain `fetch` + the Worker) and the own-keys backend (IndexedDB) |

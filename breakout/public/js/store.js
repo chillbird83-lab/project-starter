@@ -72,6 +72,13 @@ export async function refresh(channelId, opts) {
   return r;
 }
 
+/** Fresh view counts for recent candidates (this-device mode; the Worker does it on its own in cloud mode). */
+export async function refreshStats() {
+  const r = await backend.refreshStats();
+  if (r.videos.length) merge(r);
+  return r;
+}
+
 export async function analyse(videoId, force) {
   const r = await backend.analyse(videoId, force);
   set({ videos: state.videos.map((v) => (v.id === videoId ? { ...v, analysis: r.analysis, analysedAt: r.analysedAt } : v)) });

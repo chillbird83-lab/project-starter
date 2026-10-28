@@ -11,8 +11,9 @@ binding = "ASSETS"
 
 # Every 15 minutes: re-check the channels that are due (each one every REFRESH_HOURS) and send alerts.
 # Hourly at :07 — scan one niche that is due (each one every NICHE_REFRESH_HOURS).
+# At :22 and :52 — re-read view counts of recent outliers for "Rising now" (1 unit per 50 videos).
 [triggers]
-crons = ["*/15 * * * *", "7 * * * *"]
+crons = ["*/15 * * * *", "7 * * * *", "22,52 * * * *"]
 
 [vars]
 # Supabase → Project Settings → API. The anon key is public by design; row-level security protects the data.

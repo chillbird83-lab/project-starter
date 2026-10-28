@@ -36,6 +36,19 @@ export function alertMessage(video, channel, now = Date.now(), niche = '') {
   };
 }
 
+export function risingMessage(video, speed, now = Date.now()) {
+  return {
+    parse_mode: 'HTML',
+    text: [
+      `🔥 <b>Rising now: +${compact(speed.recent)} views/hour</b>${video.channelTitle ? ` · ${h(video.channelTitle)}` : ''}`,
+      `<b>${h(video.title)}</b>`,
+      `${compact(video.views)} views in ${age(video.publishedAt, now)} · ${scoreLabel(video.score)} typical · gaining ${(speed.recent / Math.max(1, speed.overall)).toFixed(1)}× faster than its average`,
+      videoURL(video.ytVideoId),
+    ].join('\n'),
+    reply_markup: { inline_keyboard: [[{ text: '🧠 Why did it work?', callback_data: `an:${video.id}` }, { text: '▶️ Watch', url: videoURL(video.ytVideoId) }]] },
+  };
+}
+
 export function analysisMessage(video, a) {
   const lines = [
     `🧠 <b>Why “${h(video.title)}” worked</b> <i>(${h(a.confidence)} confidence)</i>`,

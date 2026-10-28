@@ -15,17 +15,38 @@ export const REFINE_UPLOADS = 20;
 /** Videos scoring below this are not kept (the lowest threshold a user can pick is 1.5×). */
 export const KEEP_SCORE = 1.5;
 
-/** "meal prep, budget recipes" → "meal prep | budget recipes" (YouTube search OR). Falls back to the niche name. */
+/** A niche's words to leave out, e.g. "marvel, anime" → ["marvel", "anime"]. */
+export const nicheExcludes = (niche) => String(niche?.exclude ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 10);
+
+/**
+ * "meal prep, budget recipes" → "meal prep | budget recipes" (YouTube search OR), plus "-marvel -anime"
+ * for the words to leave out. Falls back to the niche name.
+ */
 export function nicheQuery(niche) {
-  const terms = String(niche.keywords || niche.name || '').split(',').map((s) => s.trim()).filter(Boolean);
-  return terms.slice(0, 5).join(' | ');
+  const terms = String(niche.keywords || niche.name || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 5);
+  if (!terms.length) return '';
+  const minus = nicheExcludes(niche).map((w) => (/\s/.test(w) ? `-"${w}"` : `-${w}`)).join(' ');
+  return `${terms.join(' | ')}${minus ? ` ${minus}` : ''}`;
 }
 
-export async function scanNiche(yt, query, { now = Date.now(), settings = DEFAULT_SETTINGS, days = NICHE_DAYS, refineTop = REFINE_TOP } = {}) {
+/**
+ * Whether a video mentions a left-out word in its title, description or tags. Single words match whole
+ * words and their longer forms ("movie" → "movies", "marvel" → "Marvel's"); phrases match as written.
+ */
+export function isExcluded(v, words) {
+  if (!words?.length) return false;
+  const text = `${v.title ?? ''} ${v.description ?? ''} ${(v.tags ?? []).join(' ')}`.toLowerCase();
+  const tokens = (text.match(/\p{L}[\p{L}\p{N}'’-]*/gu) || []).map((t) => t.replace(/['’]s$/, ''));
+  return words.some((w) => (/\s/.test(w) ? text.includes(w) : tokens.some((t) => t === w || (w.length >= 4 && t.startsWith(w)))));
+}
+
+export async function scanNiche(yt, query, { now = Date.now(), settings = DEFAULT_SETTINGS, days = NICHE_DAYS, refineTop = REFINE_TOP, exclude = [] } = {}) {
   if (!query) return [];
   const ids = await yt.searchVideos(query, { publishedAfter: new Date(now - days * DAY).toISOString(), order: 'viewCount', max: 50, language: settings.language });
   if (!ids.length) return [];
-  const vids = (await yt.videos(ids)).filter((v) => !v.live);
+  // YouTube's "-word" search is loose, so left-out words are checked again here.
+  const vids = (await yt.videos(ids)).filter((v) => !v.live && !isExcluded(v, exclude));
+  if (!vids.length) return [];
   const channels = new Map((await yt.channels([...new Set(vids.map((v) => v.ytChannelId))])).map((c) => [c.ytChannelId, c]));
 
   const lifetime = (c) => {

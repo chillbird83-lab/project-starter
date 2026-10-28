@@ -14,7 +14,15 @@ const MANUAL_NICHE_HOURS = 1;
 const view = $('#view');
 const navTitle = $('#nav-title');
 
-const ui = { tab: 'outliers', niche: 'all', period: 30, kind: 'all', limit: 40, refreshing: false };
+const FEED_KEY = 'breakout.feed';
+const savedFeed = (() => { try { return JSON.parse(localStorage.getItem(FEED_KEY)) || {}; } catch { return {}; } })();
+const ui = {
+  tab: 'outliers', niche: 'all', period: 30, kind: 'all', limit: 40, refreshing: false,
+  sort: ['score', 'rising', 'views', 'new'].includes(savedFeed.sort) ? savedFeed.sort : 'score',
+  size: ['any', '10000', '100000', '1000000'].includes(savedFeed.size) ? savedFeed.size : 'any',
+};
+/** Sort and channel-size choices are remembered on this device. */
+const rememberFeed = () => { try { localStorage.setItem(FEED_KEY, JSON.stringify({ sort: ui.sort, size: ui.size })); } catch { /* private mode */ } };
 let signin = null;
 let enter = true;
 
@@ -66,8 +74,11 @@ async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_N
   const { channels, niches } = store.get();
   const cutoff = Date.now() - nicheHours * 36e5;
   const dueNiches = niches.filter((n) => !n.scannedAt || Date.parse(n.scannedAt) < cutoff);
-  if (ui.refreshing || (!channels.length && !dueNiches.length)) {
-    if (!quiet && !ui.refreshing) toast('Everything was checked in the last hour.');
+  if (ui.refreshing) return;
+  if (!channels.length && !dueNiches.length) {
+    // Niches were searched recently: still refresh view counts, which is cheap.
+    try { await store.refreshStats(); } catch { /* ignore */ }
+    if (!quiet) toast('Niches were searched in the last hour. View counts are up to date.');
     return;
   }
   ui.refreshing = true;
@@ -86,6 +97,8 @@ async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_N
       if (/quota/i.test(e.message)) break;
     }
   }
+  // Fresh view counts for recent outliers, for "Rising now" (1 quota unit per 50 videos).
+  try { await store.refreshStats(); } catch { /* not worth interrupting for */ }
   try {
     if (!quiet) toast(errors.length ? errors[0] : done.length ? `Checked ${done.join(', ')}` : 'Up to date');
   } finally {
@@ -151,7 +164,15 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', async (e) => {
-  if (e.target.dataset?.action !== 'language') return;
+  const action = e.target.dataset?.action;
+  if (action === 'sort' || action === 'size') {
+    ui[action] = e.target.value;
+    ui.limit = 40;
+    rememberFeed();
+    render();
+    return;
+  }
+  if (action !== 'language') return;
   const language = e.target.value;
   try {
     await store.saveSettings({ language });
@@ -219,6 +240,8 @@ function maybeLocalRefresh() {
   const stale = (iso, hours) => !iso || Date.parse(iso) < Date.now() - hours * 36e5;
   if (channels.some((c) => stale(c.checkedAt, LOCAL_REFRESH_HOURS)) || niches.some((n) => stale(n.scannedAt, LOCAL_NICHE_HOURS))) {
     refreshAll({ quiet: true, staleHours: LOCAL_REFRESH_HOURS, nicheHours: LOCAL_NICHE_HOURS });
+  } else if (store.get().videos.some((v) => v.score >= 1.5 && Date.now() - Date.parse(v.publishedAt) < 14 * 864e5 && stale(v.updatedAt, 1))) {
+    store.refreshStats().catch(() => {});
   }
 }
 

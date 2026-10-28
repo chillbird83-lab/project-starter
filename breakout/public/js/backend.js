@@ -5,10 +5,11 @@
 //           Channels are checked when the app is open; no Telegram alerts.
 import { analyseVideo } from './analyse.js';
 import * as db from './db.js';
-import { nicheQuery, scanNiche } from './discover.js';
+import { nicheExcludes, nicheQuery, scanNiche } from './discover.js';
 import { rowToChannel, rowToNiche, rowToVideo } from './rows.js';
 import { DEFAULT_SETTINGS } from './score.js';
 import { refreshChannel } from './tracker.js';
+import { addSnapshot, withStats } from './trend.js';
 import { ytClient } from './youtube.js';
 import { uid } from './util.js';
 
@@ -106,7 +107,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
   const api = (path, body, method = 'POST') =>
     call(`api/${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json());
 
-  const VIDEO_COLS = 'id,channel_id,niche_ids,source,lang,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
+  const VIDEO_COLS = 'id,channel_id,niche_ids,source,lang,snapshots,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
 
   return {
     mode: 'cloud',
@@ -122,7 +123,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
 
     async load() {
       const [niches, channels, videos, profiles, links] = await Promise.all([
-        rest('niches?select=id,name,keywords,scanned_at,created_at&order=created_at.asc'),
+        rest('niches?select=id,name,keywords,exclude,scanned_at,created_at&order=created_at.asc'),
         rest('channels?select=*&order=created_at.asc'),
         rest(`videos?select=${VIDEO_COLS}&order=published_at.desc&limit=5000`),
         rest(`profiles?select=*&user_id=eq.${this.user.id}`),
@@ -142,10 +143,10 @@ export function cloudBackend(config, { onSignedOut } = {}) {
         body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts, language: s.language, hide_mixed: s.hideMixed, hide_languages: s.hideLanguages },
       });
     },
-    async saveNiche({ id, name, keywords = '' }) {
+    async saveNiche({ id, name, keywords = '', exclude = '' }) {
       const [row] = id
-        ? await rest(`niches?id=eq.${id}`, { method: 'PATCH', body: { name, keywords }, prefer: 'return=representation' })
-        : await rest('niches', { method: 'POST', body: { user_id: this.user.id, name, keywords }, prefer: 'return=representation' });
+        ? await rest(`niches?id=eq.${id}`, { method: 'PATCH', body: { name, keywords, exclude }, prefer: 'return=representation' })
+        : await rest('niches', { method: 'POST', body: { user_id: this.user.id, name, keywords, exclude }, prefer: 'return=representation' });
       return rowToNiche(row);
     },
     scanNiche: (nicheId) => api('niches/scan', { nicheId }),
@@ -156,6 +157,8 @@ export function cloudBackend(config, { onSignedOut } = {}) {
 
     addChannel: (input, nicheId) => api('channels', { input, nicheId }),
     refresh: (channelId) => api('refresh', { channelId }),
+    // The Worker re-reads view counts on its own schedule and during /refresh.
+    refreshStats: async () => ({ videos: [] }),
     analyse: (videoId, force = false) => api('analyse', { videoId, force }),
     telegramLink: () => api('telegram/link', {}).then((r) => r.url),
     telegramUnlink: () => api('telegram/unlink', {}),
@@ -190,6 +193,8 @@ export function localBackend(config) {
       return {
         ...v, id: old?.id ?? uid(), channelId: channel.id, nicheIds: nichesOf(old), analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
         saved: old?.saved ?? false, alertedAt: old?.alertedAt ?? (seed && v.isOutlier ? now : null), updatedAt: now,
+        baseline: v.isShort ? channel.baselineShort : channel.baselineLong, channelTitle: channel.title,
+        snapshots: addSnapshot(old?.snapshots, v.views),
       };
     });
     await db.put('channels', channel);
@@ -208,9 +213,9 @@ export function localBackend(config) {
       return { niches, channels, videos: upgraded, settings, telegram: { linked: false } };
     },
     async saveSettings(s) { settings = { ...s }; await db.put('kv', settings, 'settings'); },
-    async saveNiche({ id, name, keywords = '' }) {
+    async saveNiche({ id, name, keywords = '', exclude = '' }) {
       const old = id ? await db.get('niches', id) : null;
-      const n = { id: id ?? uid(), name, keywords, scannedAt: old?.scannedAt ?? null };
+      const n = { id: id ?? uid(), name, keywords, exclude, scannedAt: old?.scannedAt ?? null };
       await db.put('niches', n);
       return n;
     },
@@ -232,18 +237,31 @@ export function localBackend(config) {
       const tracked = new Set(channels.map((c) => c.ytChannelId));
       const byYt = new Map(existing.map((v) => [v.ytVideoId, v]));
       const now = new Date().toISOString();
-      const found = (await scanNiche(yt(), query, { settings })).filter((v) => !tracked.has(v.ytChannelId));
+      const found = (await scanNiche(yt(), query, { settings, exclude: nicheExcludes(niche) })).filter((v) => !tracked.has(v.ytChannelId));
       const videos = found.map((v) => {
         const old = byYt.get(v.ytVideoId);
         return {
           ...v, id: old?.id ?? uid(), channelId: null, nicheIds: [...new Set([...nichesOf(old), nicheId])], analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
           saved: old?.saved ?? false, alertedAt: old?.alertedAt ?? null, updatedAt: now,
+          snapshots: addSnapshot(old?.snapshots, v.views),
         };
       });
       await db.putMany('videos', videos);
       const updated = { ...niche, scannedAt: now };
       await db.put('niches', updated);
       return { niche: updated, videos };
+    },
+    /** Re-reads the view counts of recent candidates (1 quota unit per 50 videos) for "Rising now". */
+    async refreshStats() {
+      const cutoff = Date.now() - 14 * 864e5, stale = Date.now() - 30 * 6e4;
+      const due = (await db.getAll('videos')).filter((v) => (v.score >= 1.5 || v.isOutlier) && Date.parse(v.publishedAt) >= cutoff
+        && (!v.updatedAt || Date.parse(v.updatedAt) < stale)).slice(0, 200);
+      if (!due.length) return { videos: [] };
+      const fresh = new Map((await yt().videos(due.map((v) => v.ytVideoId))).map((f) => [f.ytVideoId, f]));
+      const now = new Date().toISOString();
+      const videos = due.filter((v) => fresh.has(v.ytVideoId)).map((v) => ({ ...withStats(v, fresh.get(v.ytVideoId)), updatedAt: now }));
+      await db.putMany('videos', videos);
+      return { videos };
     },
     async moveChannel(id, nicheId) { const c = (await db.getAll('channels')).find((x) => x.id === id); if (c) await db.put('channels', { ...c, nicheId }); },
     async deleteChannel(id) {

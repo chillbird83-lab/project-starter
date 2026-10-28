@@ -5,6 +5,7 @@ import { engagement, isOutlier } from './score.js';
 import * as store from './store.js';
 import { $, esc, haptic } from './util.js';
 import { LANGUAGES, languageName, videoLanguage } from './lang.js';
+import { sparkline, velocity } from './trend.js';
 import { duration, heat, languagePicker } from './views.js';
 import { channelURL, videoURL } from './youtube.js';
 
@@ -68,6 +69,7 @@ export function openNicheEditor(app, { id } = {}) {
     ${header(niche ? 'Edit niche' : 'New niche', { submit: niche ? 'Save' : 'Find outliers' })}
     <div class="card list inset">
       <label class="row field"><span class="title">Niche</span><input id="ne-name" maxlength="${NICHE_MAX}" placeholder="e.g. budget cooking" value="${esc(niche?.keywords || niche?.name || '')}" autocomplete="off" enterkeyhint="search" ${niche ? '' : 'autofocus'}></label>
+      <label class="row field"><span class="title">Leave out</span><input id="ne-exclude" maxlength="200" placeholder="Optional, e.g. marvel, anime" value="${esc(niche?.exclude ?? '')}" autocomplete="off"></label>
     </div>
     <p class="hint">Type it the way you’d search YouTube. Breakout looks at the most-watched videos of the last 30 days and keeps the ones beating their own channel’s normal. For a wider net, add a couple more with commas: “budget cooking, meal prep”.${niche ? ` Last searched: ${scanLabel(niche).replace('searched ', '')}.` : ''}</p>
     <p class="hint">Each search uses about 130 of the 10,000 free daily YouTube units. ${app.backend.mode === 'cloud' ? `Niches are searched again about every ${app.backend.config.nicheHours ?? 12} hours (up to ${max} niches).` : 'Niches are searched again when you open the app, at most twice a day.'}</p>
@@ -87,12 +89,13 @@ export function openNicheEditor(app, { id } = {}) {
     e.preventDefault();
     const name = $('#ne-name', el).value.trim().replace(/\s+/g, ' ').slice(0, NICHE_MAX);
     const keywords = name;
+    const exclude = $('#ne-exclude', el).value.split(',').map((w) => w.trim()).filter(Boolean).join(', ').slice(0, 200);
     if (!name) { $('#ne-name', el).focus(); return; }
     const btn = $('button[type="submit"]', el);
     btn.disabled = true; err.hidden = true;
     try {
-      const saved = await store.saveNiche({ id: niche?.id, name, keywords });
-      const changed = keywords !== (niche?.keywords || niche?.name) || !niche?.scannedAt;
+      const saved = await store.saveNiche({ id: niche?.id, name, keywords, exclude });
+      const changed = keywords !== (niche?.keywords || niche?.name) || exclude !== (niche?.exclude ?? '') || !niche?.scannedAt;
       finish(saved.id, changed ? await runScan(app, el, saved.id) : null);
     } catch (ex) { btn.disabled = false; fail(ex.message); }
   });
@@ -165,6 +168,15 @@ function analysisHTML(a) {
   </div>`;
 }
 
+/** Views per hour now vs its average, with a small history chart once there are two readings. */
+function speedRow(v) {
+  const s = velocity(v, Date.now());
+  const line = s.recent != null
+    ? `${s.rising ? '<span class="pill pill-warn">🔥 Rising now</span> ' : ''}<b>${compact(s.recent)}</b> views/hour now · ${compact(s.overall)}/hour on average`
+    : `<b>${compact(s.overall)}</b> views/hour on average · speed shows after the next check`;
+  return `<div class="speed-row"><span class="small">${line}</span>${sparkline(v.snapshots)}</div>`;
+}
+
 /** "Language: Hindi · Hide Hindi videos" when a video is in a language you might not want. */
 function langRow(v) {
   const l = videoLanguage(v);
@@ -204,6 +216,7 @@ export function openVideo(app, id) {
       <a class="btn secondary" href="${esc(videoURL(v.ytVideoId))}" target="_blank" rel="noopener">Open in YouTube</a>
       <button type="button" class="btn secondary" data-save>${v.saved ? '★ Saved' : '☆ Save'}</button>
     </div>
+    ${speedRow(v)}
     ${langRow(v)}
     ${!tracked && v.ytChannelId ? `<button type="button" class="btn secondary" data-track>📺 Track ${esc(channelTitle || 'this channel')}</button>` : ''}
     <div id="v-analysis">${v.analysis ? analysisHTML(v.analysis) : canAnalyse ? '<button type="button" class="btn primary ai-btn" data-analyse>🧠 Why did it work?</button>' : '<p class="hint">AI analysis isn’t set up on this server yet.</p>'}</div>

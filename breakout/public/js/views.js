@@ -1,10 +1,14 @@
 // Screens: Outliers feed, Channels, sign-in.
 import { age, compact, scoreLabel } from './rows.js';
 import { DAY, isOutlier } from './score.js';
+import { isExcluded, nicheExcludes } from './discover.js';
 import { LANGUAGES, languageName, matchesLanguage } from './lang.js';
+import { velocity } from './trend.js';
 import { esc } from './util.js';
 
 export const PERIODS = [[7, '7 days'], [30, '30 days'], [90, '90 days'], [0, 'All']];
+export const SORTS = [['score', 'Highest score'], ['rising', 'Rising fastest'], ['views', 'Most views'], ['new', 'Newest']];
+export const SIZES = [['any', 'Any channel size'], ['10000', 'Under 10K subs'], ['100000', 'Under 100K subs'], ['1000000', 'Under 1M subs']];
 
 const duration = (s) => {
   if (!s) return '';
@@ -14,19 +18,29 @@ const duration = (s) => {
 
 export const heat = (score) => (score >= 10 ? 'hot' : score >= 5 ? 'warm' : 'mild');
 
-/** The niche a video belongs to: its tracked channel's niche, or the niche whose scan found it. */
 /** Whether a video belongs to a niche: through its tracked channel, or because the niche's search found it. */
 export const inNicheOf = (v, byChannel, nicheId) => byChannel.get(v.channelId)?.nicheId === nicheId || !!v.nicheIds?.includes(nicheId);
 export const channelTitleOf = (v, byChannel) => byChannel.get(v.channelId)?.title ?? v.channelTitle ?? '';
 
-export function videoCard(v, channelTitle, now) {
+export function videoCard(v, channelTitle, now, { showSpeed = false } = {}) {
+  const speed = velocity(v, now);
   return `<button type="button" class="vcard" data-action="video" data-id="${esc(v.id)}">
     <span class="vthumb">${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
-      <b class="badge ${heat(v.score)}">${scoreLabel(v.score)}</b>${v.isShort ? '<i class="tag">Short</i>' : `<i class="tag">${duration(v.durationS)}</i>`}${v.saved ? '<i class="star" aria-label="Saved">★</i>' : ''}</span>
+      <b class="badge ${heat(v.score)}">${scoreLabel(v.score)}</b>${v.isShort ? '<i class="tag">Short</i>' : `<i class="tag">${duration(v.durationS)}</i>`}${v.saved ? '<i class="star" aria-label="Saved">★</i>' : ''}
+      ${speed.rising ? `<i class="rising" title="Gaining views faster than its average">🔥 +${compact(speed.recent)}/h</i>` : ''}</span>
     <span class="vmeta"><span class="vtitle">${esc(v.title)}</span>
-      <span class="sub">${esc(channelTitle)} · ${compact(v.views)} views · ${age(v.publishedAt, now)}</span></span>
+      <span class="sub">${esc(channelTitle)} · ${compact(v.views)} views · ${age(v.publishedAt, now)}${showSpeed && !speed.rising ? ` · ${compact(speed.perHour)}/h` : ''}</span></span>
   </button>`;
 }
+
+/** Subscriber count behind a video: its tracked channel's, or the one saved when a niche search found it. */
+const subsOf = (v, byChannel) => byChannel.get(v.channelId)?.subscribers ?? v.channelSubs ?? null;
+
+const SORTERS = {
+  score: (a, b) => b.score - a.score,
+  views: (a, b) => b.views - a.views,
+  new: (a, b) => b.publishedAt.localeCompare(a.publishedAt),
+};
 
 const lastChecked = (state, now) => {
   const times = [...state.channels.map((c) => c.checkedAt), ...state.niches.map((n) => n.scannedAt)].filter(Boolean).sort();
@@ -38,15 +52,26 @@ export function outlierList(ctx) {
   const { videos, channels, niches, settings } = ctx.state;
   const f = ctx.ui;
   const byId = new Map(channels.map((c) => [c.id, c]));
-  const nicheIds = new Set(niches.map((n) => n.id));
-  const visible = (v) => byId.has(v.channelId) || (!v.channelId && !!v.nicheIds?.some((id) => nicheIds.has(id)));
-  const inNiche = (v) => f.niche === 'all' || f.niche === 'saved' || inNicheOf(v, byId, f.niche);
-  const list = videos.filter((v) => visible(v) && inNiche(v)
+  const excludes = new Map(niches.map((n) => [n.id, nicheExcludes(n)]));
+  // A found video shows if at least one of its niches accepts it (isn't left out by that niche's words).
+  const accepted = (v, ids) => ids.some((id) => excludes.has(id) && !isExcluded(v, excludes.get(id)));
+  const visible = (v) => byId.has(v.channelId) || (!v.channelId && accepted(v, v.nicheIds ?? []));
+  const inNiche = (v) => f.niche === 'all' || f.niche === 'saved'
+    || byId.get(v.channelId)?.nicheId === f.niche || (!!v.nicheIds?.includes(f.niche) && accepted(v, [f.niche]));
+  const maxSubs = f.size === 'any' ? Infinity : Number(f.size);
+  const smallEnough = (v) => { const s = subsOf(v, byId); return s == null || s < maxSubs; };
+  const filtered = videos.filter((v) => visible(v) && inNiche(v)
     && (f.niche === 'saved' ? v.saved : isOutlier(v, v.score, settings))
     && (!f.period || ctx.now - Date.parse(v.publishedAt) <= f.period * DAY)
     && (f.kind === 'all' || (f.kind === 'short') === !!v.isShort)
-    && matchesLanguage(v, settings))
-    .sort((a, b) => b.score - a.score);
+    && smallEnough(v)
+    && matchesLanguage(v, settings));
+  let list;
+  if (f.sort === 'rising') {
+    // Rising videos first (fastest first), then everything else by views per hour.
+    const speed = new Map(filtered.map((v) => [v.id, velocity(v, ctx.now)]));
+    list = filtered.sort((a, b) => (speed.get(b.id).rising - speed.get(a.id).rising) || (speed.get(b.id).perHour - speed.get(a.id).perHour));
+  } else list = filtered.sort(SORTERS[f.sort] ?? SORTERS.score);
   if (!list.length) {
     if (!channels.length && !scanning(ctx.state).length) {
       return `<div class="empty"><div class="empty-emoji" aria-hidden="true">📈</div><h3>Find the outliers in your niche</h3>
@@ -58,7 +83,7 @@ export function outlierList(ctx) {
       <h3>${f.niche === 'saved' ? 'Nothing saved yet' : 'No outliers here'}</h3>
       <p>${f.niche === 'saved' ? 'Tap ☆ on a video to keep it here.' : `Nothing${settings.language !== 'any' ? ` in ${esc(languageName(settings.language))}` : ''} beat ${scoreLabel(settings.threshold)} typical views in this view. Try a longer period, another language, or a lower threshold in Settings.`}</p></div>`;
   }
-  return `<div class="vgrid">${list.slice(0, f.limit).map((v) => videoCard(v, channelTitleOf(v, byId), ctx.now)).join('')}</div>
+  return `<div class="vgrid">${list.slice(0, f.limit).map((v) => videoCard(v, channelTitleOf(v, byId), ctx.now, { showSpeed: f.sort === 'rising' })).join('')}</div>
     ${list.length > f.limit ? '<button type="button" class="btn secondary" data-action="more">Show more</button>' : ''}`;
 }
 
@@ -69,7 +94,8 @@ export const languagePicker = (current, id = 'lang-filter') => `<label class="la
 function nicheBar(ctx) {
   const n = ctx.state.niches.find((x) => x.id === ctx.ui.niche);
   if (!n) return '';
-  return `<div class="niche-bar"><span class="grow sub">🔭 ${esc(n.keywords || n.name)} · ${n.scannedAt ? `searched ${age(n.scannedAt, ctx.now)} ago` : 'not searched yet'}</span>
+  const left = nicheExcludes(n);
+  return `<div class="niche-bar"><span class="grow sub">🔭 ${esc(n.keywords || n.name)}${left.length ? ` · without ${esc(left.join(', '))}` : ''} · ${n.scannedAt ? `searched ${age(n.scannedAt, ctx.now)} ago` : 'not searched yet'}</span>
     <button type="button" class="chip-btn" data-action="edit-niche" data-id="${esc(n.id)}">Edit</button>
     <button type="button" class="chip-btn danger" data-action="remove-niche" data-id="${esc(n.id)}">Remove</button></div>`;
 }
@@ -91,6 +117,10 @@ export function outliersView(ctx) {
     <div class="seg" role="group" aria-label="Published">${PERIODS.map(([d, l]) => `<button type="button" data-action="period" data-value="${d}" class="${f.period === d ? 'on' : ''}" aria-pressed="${f.period === d}">${l}</button>`).join('')}</div>
     ${settings.includeShorts ? `<div class="seg" role="group" aria-label="Type">${[['all', 'All'], ['long', 'Long-form'], ['short', 'Shorts']].map(([k, l]) => `<button type="button" data-action="kind" data-value="${k}" class="${f.kind === k ? 'on' : ''}" aria-pressed="${f.kind === k}">${l}</button>`).join('')}</div>` : ''}` : ''}
     ${nicheBar(ctx)}
+    ${anything ? `<div class="feed-tools">
+      <label class="tool-pick"><span class="sr-only">Sort</span><select data-action="sort">${SORTS.map(([k, l]) => `<option value="${k}" ${f.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="tool-pick"><span class="sr-only">Channel size</span><select data-action="size">${SIZES.map(([k, l]) => `<option value="${k}" ${f.size === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </div>` : ''}
     <div id="outlier-list">${outlierList(ctx)}</div>`;
 }
 

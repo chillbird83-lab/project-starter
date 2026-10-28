@@ -8,6 +8,8 @@ create table if not exists public.niches (
   name       text not null check (char_length(name) between 1 and 80),
   -- What Breakout searches YouTube for; the app sets it to the niche name ("budget cooking").
   keywords   text not null default '' check (char_length(keywords) <= 200),
+  -- Words to leave out of the niche's searches ("marvel, anime").
+  exclude    text not null default '' check (char_length(exclude) <= 200),
   scanned_at timestamptz,
   created_at timestamptz not null default now()
 );
@@ -45,6 +47,8 @@ create table if not exists public.videos (
   baseline     bigint not null default 0,
   baseline_kind text not null default 'median' check (baseline_kind in ('median', 'average')),
   lang         text not null default '',  -- YouTube's audio/default language, if the creator set one
+  snapshots    jsonb not null default '[]',  -- recent [{t, v}] view counts, for "Rising now"
+  rising_alerted_at timestamptz,
   title        text not null default '',
   description  text not null default '',
   tags         text[] not null default '{}',
@@ -72,6 +76,7 @@ create index if not exists niches_due on public.niches (scanned_at nulls first);
 -- Upgrading a database made with the first version of this file:
 alter table public.niches add column if not exists keywords text not null default '';
 alter table public.niches add column if not exists scanned_at timestamptz;
+alter table public.niches add column if not exists exclude text not null default '';
 alter table public.niches drop constraint if exists niches_name_check;
 alter table public.niches add constraint niches_name_check check (char_length(name) between 1 and 80);
 alter table public.videos alter column channel_id drop not null;
@@ -84,6 +89,9 @@ alter table public.videos add column if not exists channel_subs bigint;
 alter table public.videos add column if not exists baseline bigint not null default 0;
 alter table public.videos add column if not exists baseline_kind text not null default 'median';
 alter table public.videos add column if not exists lang text not null default '';
+alter table public.videos add column if not exists snapshots jsonb not null default '[]';
+alter table public.videos add column if not exists rising_alerted_at timestamptz;
+create index if not exists videos_stats_due on public.videos (updated_at) where score >= 1.5;
 alter table public.profiles add column if not exists language text not null default 'any';
 alter table public.profiles add column if not exists hide_mixed boolean not null default true;
 alter table public.profiles add column if not exists hide_languages text[] not null default '{}';

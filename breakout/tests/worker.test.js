@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { NICHE_CRON, runNicheScan, runScheduled } from '../worker/index.js';
+import worker, { NICHE_CRON, STATS_CRON, refreshStats, runNicheScan, runScheduled } from '../worker/index.js';
 import { webhookSecret } from '../worker/telegram.js';
 import { fakeSupabase } from './fake-supabase.js';
 import { CH, fakeYouTube } from './fake-youtube.js';
@@ -280,5 +280,36 @@ test('alerts skip videos in other languages', async () => {
     // "I tried the 5am routine for 30 days" is English → no alert; the short title it can't place still alerts
     assert.equal(alerts.length, 1);
     assert.match(alerts[0], /Feed 4 people/);
+  } finally { w.restore(); }
+});
+
+test('rising now: view counts are re-read and a speeding-up outlier alerts once', async () => {
+  const NOW = Date.parse('2026-10-28T12:00:00Z');
+  const w = world({
+    videos: [{
+      id: 'v1', user_id: ALICE, yt_video_id: 'breakout001', channel_title: 'Morning Maker', title: 'I tried the 5am routine for 30 days',
+      published_at: new Date(NOW - 3 * 864e5).toISOString(), duration_s: 842, is_short: false, views: 30000, score: 7.19, baseline: 12750,
+      baseline_kind: 'median', is_outlier: true, snapshots: [{ t: new Date(NOW - 6 * 36e5).toISOString(), v: 30000 }],
+      updated_at: new Date(NOW - 6 * 36e5).toISOString(), rising_alerted_at: null,
+    }],
+    profiles: [{ user_id: ALICE, threshold: 3, min_views: 1000, include_shorts: true, alerts: true, language: 'any' }],
+    telegram_links: [{ user_id: ALICE, chat_id: 777 }],
+  });
+  try {
+    const tasks = [];
+    await worker.scheduled({ cron: STATS_CRON, scheduledTime: NOW }, env(), { waitUntil: (p) => tasks.push(p) });
+    await Promise.all(tasks);
+    const row = w.sb.db.videos[0];
+    assert.equal(row.views, 60000);
+    assert.equal(row.score, 14.38);
+    assert.equal(row.snapshots.length, 2);
+    assert.ok(row.rising_alerted_at);
+    const msg = w.telegram.find((t) => t.method === 'sendMessage');
+    assert.match(msg.body.text, /Rising now: \+5K views\/hour/);
+    assert.match(msg.body.text, /gaining 6\.0× faster than its average/);
+    // Checked a moment ago → not due; and it never alerts twice
+    assert.deepEqual((({ updated, rising }) => ({ updated, rising }))(await refreshStats(env(), { now: NOW + 10 * 6e4 })), { updated: 0, rising: 0 });
+    row.updated_at = new Date(NOW - 36e5).toISOString();
+    assert.equal((await refreshStats(env(), { now: NOW + 36e5 })).rising, 0);
   } finally { w.restore(); }
 });
