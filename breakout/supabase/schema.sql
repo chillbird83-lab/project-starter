@@ -5,8 +5,8 @@
 create table if not exists public.niches (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
-  name       text not null check (char_length(name) between 1 and 40),
-  -- Search words for finding outliers from any channel ("meal prep, budget recipes"). Empty = just a group.
+  name       text not null check (char_length(name) between 1 and 80),
+  -- What Breakout searches YouTube for; the app sets it to the niche name ("budget cooking").
   keywords   text not null default '' check (char_length(keywords) <= 200),
   scanned_at timestamptz,
   created_at timestamptz not null default now()
@@ -71,6 +71,8 @@ create index if not exists niches_due on public.niches (scanned_at nulls first);
 -- Upgrading a database made with the first version of this file:
 alter table public.niches add column if not exists keywords text not null default '';
 alter table public.niches add column if not exists scanned_at timestamptz;
+alter table public.niches drop constraint if exists niches_name_check;
+alter table public.niches add constraint niches_name_check check (char_length(name) between 1 and 80);
 alter table public.videos alter column channel_id drop not null;
 alter table public.videos add column if not exists niche_id uuid references public.niches (id) on delete cascade;
 alter table public.videos add column if not exists source text not null default 'channel';

@@ -16,7 +16,7 @@ It is an installable phone app (PWA) that runs on free tiers:
 
 ## Two ways to find outliers
 
-- **Niches (no competitors needed):** give a niche a few search words, e.g. "meal prep, budget recipes". Breakout searches YouTube for the niche's most-watched videos of the last 30 days and keeps the ones beating their own channel's normal. Small channels with one big hit stand out the most.
+- **Niches (no competitors needed):** just type your niche the way you'd search YouTube, e.g. "budget cooking" (add more with commas for a wider net). Breakout searches YouTube for the niche's most-watched videos of the last 30 days and keeps the ones beating their own channel's normal. Small channels with one big hit stand out the most.
   - The scan first compares each video with its channel's lifetime average views per video.
   - It then re-checks the 10 most promising channels against their recent uploads, which is more accurate.
   - About **122 quota units per scan**, because a YouTube search costs 100.

@@ -18,12 +18,15 @@ const nicheOptions = (selected) => [`<option value="">No niche</option>`, ...sto
 /** Handles the "+ New niche…" option of a niche <select>. Returns the chosen niche id or null. */
 async function pickNiche(select) {
   if (select.value !== '__new') return select.value || null;
-  const name = prompt('Name the niche, e.g. “Home cooking”')?.trim().slice(0, 40);
+  const name = prompt('Your niche, e.g. “budget cooking”')?.trim().slice(0, NICHE_MAX);
   if (!name) { select.value = ''; return null; }
-  const n = await store.saveNiche({ name });
+  const n = await store.saveNiche({ name, keywords: name });
   select.innerHTML = nicheOptions(n.id);
   return n.id;
 }
+
+/** A niche is one phrase: its name is also what Breakout searches YouTube for. */
+const NICHE_MAX = 80;
 
 const copy = async (text) => {
   try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Couldn’t copy on this device.'); }
@@ -61,12 +64,11 @@ export function openNicheEditor(app, { id } = {}) {
   const niche = id ? store.get().niches.find((n) => n.id === id) : null;
   const max = app.backend.config.maxNiches ?? 8;
   const el = openSheet(`<form id="ne-form" novalidate>
-    ${header(niche ? niche.name : 'New niche', { submit: niche ? 'Save' : 'Find outliers' })}
+    ${header(niche ? 'Edit niche' : 'New niche', { submit: niche ? 'Save' : 'Find outliers' })}
     <div class="card list inset">
-      <label class="row field"><span class="title">Name</span><input id="ne-name" maxlength="40" placeholder="e.g. Home cooking" value="${esc(niche?.name ?? '')}" autocomplete="off" ${niche ? '' : 'autofocus'}></label>
-      <label class="row field"><span class="title">Search for</span><input id="ne-keywords" maxlength="200" placeholder="meal prep, budget recipes" value="${esc(niche?.keywords ?? '')}" autocomplete="off"></label>
+      <label class="row field"><span class="title">Niche</span><input id="ne-name" maxlength="${NICHE_MAX}" placeholder="e.g. budget cooking" value="${esc(niche?.keywords || niche?.name || '')}" autocomplete="off" enterkeyhint="search" ${niche ? '' : 'autofocus'}></label>
     </div>
-    <p class="hint">What would you type into YouTube to find this niche? Separate a few searches with commas. Breakout looks at the most-watched videos of the last 30 days and keeps the ones beating their own channel’s normal. Leave it empty to use the niche only for grouping channels.${niche ? ` This niche was ${scanLabel(niche)}.` : ''}</p>
+    <p class="hint">Type it the way you’d search YouTube. Breakout looks at the most-watched videos of the last 30 days and keeps the ones beating their own channel’s normal. For a wider net, add a couple more with commas: “budget cooking, meal prep”.${niche ? ` Last searched: ${scanLabel(niche).replace('searched ', '')}.` : ''}</p>
     <p class="hint">Each search uses about 122 of the 10,000 free daily YouTube units. ${app.backend.mode === 'cloud' ? `Niches are searched again about every ${app.backend.config.nicheHours ?? 12} hours (up to ${max} niches).` : 'Niches are searched again when you open the app, at most twice a day.'}</p>
     <div class="scan-status" id="ne-status" role="status" hidden><span class="spinner" aria-hidden="true"></span> Searching YouTube and checking each channel’s normal…</div>
     <p class="form-error" id="ne-error" role="alert" hidden></p>
@@ -82,8 +84,8 @@ export function openNicheEditor(app, { id } = {}) {
   };
   $('#ne-form', el).addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = $('#ne-name', el).value.trim().slice(0, 40);
-    const keywords = $('#ne-keywords', el).value.trim().slice(0, 200);
+    const name = $('#ne-name', el).value.trim().replace(/\s+/g, ' ').slice(0, NICHE_MAX);
+    const keywords = name;
     if (!name) { $('#ne-name', el).focus(); return; }
     const btn = $('button[type="submit"]', el);
     btn.disabled = true; err.hidden = true;
@@ -288,10 +290,10 @@ export function openChannel(app, id) {
 export function openNiches(app) {
   const { niches, channels } = store.get();
   const el = openSheet(`${header('Niches', { cancel: 'Done', submit: '' })}
-    <p class="hint">A niche with search words finds outliers from any channel. You can also group tracked channels under it.</p>
+    <p class="hint">Each niche finds outliers from any channel. Tracked channels can be grouped under a niche too.</p>
     <div class="card list inset">${niches.map((n) => `<button type="button" class="row" data-edit="${esc(n.id)}">
-        <span class="ico" style="--c:${n.keywords ? '#ff3b30' : '#8e8e93'}" aria-hidden="true">${n.keywords ? '🔭' : '🗂️'}</span>
-        <span class="grow"><span class="title">${esc(n.name)}</span><span class="sub">${n.keywords ? `“${esc(n.keywords)}” · ${scanLabel(n)}` : 'No search words'} · ${channels.filter((c) => c.nicheId === n.id).length} channels</span></span>
+        <span class="ico" style="--c:#ff3b30" aria-hidden="true">🔭</span>
+        <span class="grow"><span class="title">${esc(n.name)}</span><span class="sub">${scanLabel(n)} · ${channels.filter((c) => c.nicheId === n.id).length} tracked channels</span></span>
         <span class="chev" aria-hidden="true">›</span></button>`).join('')}
       <button type="button" class="row add-row" data-new><span class="ico add-ico" aria-hidden="true">+</span><span class="title">New niche</span></button></div>`, { label: 'Niches' });
   el.addEventListener('click', (e) => {
@@ -391,12 +393,11 @@ export function openOnboarding(app) {
     <h2 class="welcome-title">What’s your niche?</h2>
     <p class="welcome-text">Breakout searches YouTube for it and shows the videos beating their own channel’s normal views.</p>
     <div class="card list inset">
-      <label class="row field"><span class="title">Niche</span><input id="ob-niche" maxlength="40" placeholder="e.g. Home cooking" autocomplete="off"></label>
-      <label class="row field"><span class="title">Search for</span><input id="ob-keywords" maxlength="200" placeholder="meal prep, budget recipes" autocomplete="off"></label>
+      <label class="row field"><span class="title">Niche</span><input id="ob-niche" maxlength="${NICHE_MAX}" placeholder="e.g. budget cooking" autocomplete="off" enterkeyhint="search"></label>
       <label class="row field"><span class="title">Outlier at</span><select id="ob-threshold">${THRESHOLDS.map((t) => `<option value="${t}" ${t === 3 ? 'selected' : ''}>${t}× typical views</option>`).join('')}</select></label>
       ${local ? '<label class="row field"><span class="title">YouTube key</span><input id="ob-yt" type="password" placeholder="Required" autocomplete="off" spellcheck="false"></label>' : ''}
     </div>
-    <p class="hint">Search for: what you’d type into YouTube; separate a few with commas. If you leave it empty, the niche name is used.${local ? ' YouTube key: free from Google Cloud Console → enable “YouTube Data API v3” → Credentials → Create API key. It stays in this browser.' : ''}</p>
+    <p class="hint">Type it the way you’d search YouTube.${local ? ' YouTube key: free from Google Cloud Console → enable “YouTube Data API v3” → Credentials → Create API key. It stays in this browser.' : ''}</p>
     <div class="scan-status" id="ne-status" role="status" hidden><span class="spinner" aria-hidden="true"></span> Searching YouTube…</div>
     <p class="form-error" id="ob-error" role="alert" hidden></p>
     <button type="submit" class="btn primary">Find outliers</button>
@@ -407,14 +408,14 @@ export function openOnboarding(app) {
   const needKey = () => { if (local && !$('#ob-yt', el).value.trim()) { er.textContent = 'Add a YouTube API key to search YouTube.'; er.hidden = false; return true; } return false; };
   $('#ob-form', el).addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = $('#ob-niche', el).value.trim().slice(0, 40);
+    const name = $('#ob-niche', el).value.trim().replace(/\s+/g, ' ').slice(0, NICHE_MAX);
     if (!name) { $('#ob-niche', el).focus(); return; }
     if (needKey()) return;
     const btn = $('button[type="submit"]', el);
     btn.disabled = true; er.hidden = true;
     try {
       await store.saveSettings(settingsPatch());
-      const n = await store.saveNiche({ name, keywords: $('#ob-keywords', el).value.trim().slice(0, 200) || name });
+      const n = await store.saveNiche({ name, keywords: name });
       const found = await runScan(app, el, n.id);
       closeSheet();
       app.showNiche(n.id);
