@@ -1,0 +1,22 @@
+{
+  "id": "./",
+  "name": "Lectern — Lecture recorder & organiser",
+  "short_name": "Lectern",
+  "description": "Record lectures, bookmark key moments, take notes and keep everything organised by course.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2f2f7",
+  "theme_color": "#f2f2f7",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Record", "short_name": "Record", "url": "./index.html#record", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
