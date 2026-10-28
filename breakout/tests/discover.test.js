@@ -18,8 +18,9 @@ test('a niche scan finds outliers from any channel, checked against their real b
   assert.equal(search.searchParams.get('type'), 'video');
   assert.equal(search.searchParams.get('order'), 'viewCount');
   assert.equal(search.searchParams.get('publishedAfter'), new Date(NOW - 30 * 864e5).toISOString());
-  // search 1 + videos 1 + channels 1 + (uploads + videos) for each of the 2 channels = 7 calls, ~107 units
-  assert.equal(calls.length, 7);
+  // search 1 + videos 1 + channels 1 + uploads for each of the 2 channels + 1 batched videos call = 6 calls, ~105 units
+  assert.equal(calls.length, 6);
+  assert.equal(calls.filter((u) => u.pathname.endsWith('/videos')).length, 2);
   const byId = Object.fromEntries(found.map((v) => [v.ytVideoId, v]));
   assert.deepEqual(Object.keys(byId).sort(), ['breakout001', 'tinyhit0001']); // ordinary videos are dropped
   const tiny = byId.tinyhit0001;
@@ -33,10 +34,44 @@ test('a niche scan finds outliers from any channel, checked against their real b
   assert.deepEqual(await scanNiche(ytClient('KEY', fetchImpl), '', { now: NOW }), []);
 });
 
-test('only the top channels are re-checked; the rest keep the lifetime-average score', async () => {
+test('only re-checked channels are kept; a guessed score never shows', async () => {
   const { fetchImpl } = fakeYouTube();
-  const found = await scanNiche(ytClient('KEY', fetchImpl), 'x', { now: NOW, refineTop: 0 });
-  assert.ok(found.every((v) => v.baselineKind === 'average'));
-  const tiny = found.find((v) => v.ytVideoId === 'tinyhit0001');
-  assert.equal(tiny.baseline, 1000); // 40,000 lifetime views / 40 videos
+  assert.deepEqual(await scanNiche(ytClient('KEY', fetchImpl), 'x', { now: NOW, refineTop: 0 }), []);
+  // With room for one channel, the strongest candidate (Tiny Kitchen) is checked; Morning Maker is dropped
+  const one = await scanNiche(ytClient('KEY', fakeYouTube().fetchImpl), 'x', { now: NOW, refineTop: 1 });
+  assert.deepEqual(one.map((v) => v.ytVideoId), ['tinyhit0001']);
+  assert.ok(one.every((v) => v.baselineKind === 'median'));
+});
+
+test('videos stored with an estimated (lifetime-average) score are never outliers', async () => {
+  const { isOutlier } = await import('../public/js/score.js');
+  const v = { views: 20_000_000, durationS: 50, baselineKind: 'average' };
+  assert.equal(isOutlier(v, 252, { threshold: 3, minViews: 1000, includeShorts: true }), false);
+  assert.equal(isOutlier({ ...v, baselineKind: 'median' }, 252, { threshold: 3, minViews: 1000, includeShorts: true }), true);
+});
+
+test('a big channel whose Shorts all get millions is not called an outlier', async () => {
+  const BIG = 'UCbigbigbigbigbigbigbig0';
+  const day = 864e5;
+  const item = (id, views, ageDays) => ({
+    id, snippet: { channelId: BIG, title: `Clip ${id}`, liveBroadcastContent: 'none', publishedAt: new Date(NOW - ageDays * day).toISOString(), thumbnails: {} },
+    statistics: { viewCount: String(views) }, contentDetails: { duration: 'PT50S' },
+  });
+  const recent = Array.from({ length: 20 }, (_, i) => item(`bigrecent${String(i).padStart(2, '0')}`, 15_000_000 + i * 100_000, 8 + i));
+  const hit = item('bigclip0001', 20_000_000, 12);
+  const fetchImpl = async (input) => {
+    const u = new URL(String(input));
+    const p = u.searchParams;
+    const json = (b) => new Response(JSON.stringify(b), { headers: { 'Content-Type': 'application/json' } });
+    switch (u.pathname.split('/').pop()) {
+      case 'search': return json({ items: [{ id: { videoId: 'bigclip0001' } }] });
+      case 'channels': return json({ items: [{ id: BIG, snippet: { title: 'Huge Studio' }, statistics: { subscriberCount: '20000000', videoCount: '8000', viewCount: '1000000000' }, contentDetails: { relatedPlaylists: { uploads: 'UUbig' } } }] });
+      case 'playlistItems': return json({ items: recent.map((v) => ({ contentDetails: { videoId: v.id } })) });
+      case 'videos': { const ids = p.get('id').split(','); return json({ items: [hit, ...recent].filter((v) => ids.includes(v.id)) }); }
+      default: return json({ items: [] });
+    }
+  };
+  // Against the lifetime average (125K per video) this Short looked like ~250×; against its recent Shorts it's ~2×.
+  const found = await scanNiche(ytClient('KEY', fetchImpl), 'marvel', { now: NOW });
+  assert.ok(found.every((v) => !v.isOutlier), JSON.stringify(found.map((v) => [v.ytVideoId, v.score])));
 });

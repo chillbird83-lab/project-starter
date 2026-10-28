@@ -8,7 +8,7 @@ import { channelsView, loadingView, outlierList, outliersView, signInView } from
 
 const VIEWS = { outliers: outliersView, channels: channelsView };
 const LOCAL_REFRESH_HOURS = 3;
-/** Niche searches cost ~122 quota units, so they repeat less often than channel checks. */
+/** Niche searches cost ~130 quota units, so they repeat less often than channel checks. */
 const LOCAL_NICHE_HOURS = 12;
 const MANUAL_NICHE_HOURS = 1;
 const view = $('#view');

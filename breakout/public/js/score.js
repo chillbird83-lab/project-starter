@@ -55,6 +55,8 @@ export function scoreVideo(v, base, now = Date.now()) {
 }
 
 export function isOutlier(v, score, settings = DEFAULT_SETTINGS) {
+  // Scores against a channel's lifetime average are only estimates (older versions stored some).
+  if (v.baselineKind === 'average') return false;
   return score >= settings.threshold && v.views >= settings.minViews && (settings.includeShorts || !isShort(v));
 }
 

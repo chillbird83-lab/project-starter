@@ -28,6 +28,6 @@ MAX_CHANNELS = "30"
 REFRESH_HOURS = "4"
 BATCH_SIZE = "6"
 ANALYSES_PER_DAY = "25"
-# Niche scans cost about 122 units each (a YouTube search is 100).
+# Niche scans cost about 130 units each (a YouTube search is 100).
 NICHE_REFRESH_HOURS = "12"
 MAX_NICHES = "8"

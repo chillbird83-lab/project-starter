@@ -70,7 +70,7 @@ export function openNicheEditor(app, { id } = {}) {
       <label class="row field"><span class="title">Niche</span><input id="ne-name" maxlength="${NICHE_MAX}" placeholder="e.g. budget cooking" value="${esc(niche?.keywords || niche?.name || '')}" autocomplete="off" enterkeyhint="search" ${niche ? '' : 'autofocus'}></label>
     </div>
     <p class="hint">Type it the way you’d search YouTube. Breakout looks at the most-watched videos of the last 30 days and keeps the ones beating their own channel’s normal. For a wider net, add a couple more with commas: “budget cooking, meal prep”.${niche ? ` Last searched: ${scanLabel(niche).replace('searched ', '')}.` : ''}</p>
-    <p class="hint">Each search uses about 122 of the 10,000 free daily YouTube units. ${app.backend.mode === 'cloud' ? `Niches are searched again about every ${app.backend.config.nicheHours ?? 12} hours (up to ${max} niches).` : 'Niches are searched again when you open the app, at most twice a day.'}</p>
+    <p class="hint">Each search uses about 130 of the 10,000 free daily YouTube units. ${app.backend.mode === 'cloud' ? `Niches are searched again about every ${app.backend.config.nicheHours ?? 12} hours (up to ${max} niches).` : 'Niches are searched again when you open the app, at most twice a day.'}</p>
     <div class="scan-status" id="ne-status" role="status" hidden><span class="spinner" aria-hidden="true"></span> Searching YouTube and checking each channel’s normal…</div>
     <p class="form-error" id="ne-error" role="alert" hidden></p>
     ${niche ? '<button type="button" class="btn secondary" data-scan>Search again now</button>' : ''}

@@ -222,7 +222,7 @@ export function localBackend(config) {
         if (!nicheIds.length && !v.channelId) await db.del('videos', v.id); else await db.put('videos', { ...v, nicheIds });
       }
     },
-    /** Finds outliers from any channel for the niche's search words (about 122 of your quota units). */
+    /** Finds outliers from any channel for the niche's search words (about 130 of your quota units). */
     async scanNiche(nicheId) {
       const niche = await db.get('niches', nicheId);
       if (!niche) throw new Error('Unknown niche.');

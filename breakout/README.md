@@ -17,9 +17,9 @@ It is an installable phone app (PWA) that runs on free tiers:
 ## Two ways to find outliers
 
 - **Niches (no competitors needed):** just type your niche the way you'd search YouTube, e.g. "budget cooking" (add more with commas for a wider net). Breakout searches YouTube for the niche's most-watched videos of the last 30 days and keeps the ones beating their own channel's normal. Small channels with one big hit stand out the most.
-  - The scan first compares each video with its channel's lifetime average views per video.
-  - It then re-checks the 10 most promising channels against their recent uploads, which is more accurate.
-  - About **122 quota units per scan**, because a YouTube search costs 100.
+  - A rough first pass (each channel's lifetime average views per video) only picks candidates.
+  - Every candidate's channel is then checked against its 20 latest uploads (up to 20 channels per search), and only those real scores count. Lifetime averages inflate channels that have grown, which is why big channels used to show scores like 250×.
+  - About **130 quota units per scan**, because a YouTube search costs 100.
   - Each niche is searched again every 12 hours, or when you tap refresh (at most once an hour).
 - **Tracked channels:** follow specific competitors closely. They're checked every 4 hours, at 3 units each. From any outlier, tap **Track this channel**.
 
@@ -121,7 +121,7 @@ These are set in `wrangler.toml` `[vars]`:
 | `NICHE_REFRESH_HOURS` | 12 | How often each niche is searched (one niche per hourly run) |
 | `MAX_NICHES` | 8 | Niches with search words per user |
 
-**Quota maths:** a niche scan costs about 122 units and runs twice a day, so a niche uses about 244 units a day: 20 niches use about half the free quota. A channel check costs 3 units, and each channel is checked 6 times a day, so it uses 18 units a day. The free 10,000 units/day therefore covers about **550 tracked channels** across all users. Each 15-minute run handles 6 channels, which is up to 576 checks a day. That keeps up with about 96 channels at the 4-hour interval. Beyond that, raise `BATCH_SIZE` (paid Workers plans allow more subrequests) or `REFRESH_HOURS`.
+**Quota maths:** a niche scan costs about 130 units and runs twice a day, so a niche uses about 260 units a day: 20 niches use about half the free quota. A channel check costs 3 units, and each channel is checked 6 times a day, so it uses 18 units a day. The free 10,000 units/day therefore covers about **550 tracked channels** across all users. Each 15-minute run handles 6 channels, which is up to 576 checks a day. That keeps up with about 96 channels at the 4-hour interval. Beyond that, raise `BATCH_SIZE` (paid Workers plans allow more subrequests) or `REFRESH_HOURS`.
 
 Adding a channel by an old-style `/c/` link uses YouTube search (100 units). @handles, channel links and video links cost 1–2 units.
 
@@ -148,7 +148,7 @@ phone (PWA)
 | `public/js/analyse.js` | Gemini prompt, response schema and clean-up for "Why did it work?" |
 | `public/js/tracker.js` | One channel check (3 units) |
 | `public/js/lang.js` | Video language: YouTube's field, else script / common-word detection; the feed filter |
-| `public/js/discover.js` | Niche scan: search → stats → lifetime-average score → re-check the top channels (≈122 units) |
+| `public/js/discover.js` | Niche scan: search → stats → lifetime-average score → re-check the top channels (≈130 units) |
 | `public/js/backend.js` | Cloud backend (Supabase over plain `fetch` + the Worker) and the own-keys backend (IndexedDB) |
 | `worker/index.js`, `worker/telegram.js` | API, cron and Telegram |
 | `supabase/schema.sql` | Tables, row-level security and column-level update rights |

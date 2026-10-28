@@ -1,13 +1,17 @@
 // Niche discovery: outliers from any channel, no competitor list needed.
 // 1. YouTube search for the niche's most-watched videos of the last 30 days (100 units)
 // 2. Their stats and their channels (2 units)
-// 3. A first score against each channel's lifetime average views per video
-// 4. For the most promising channels, the real baseline from their latest uploads (2 units each)
-// About 122 quota units per scan with the defaults.
+// 3. A rough first score against each channel's lifetime average views per video, only to pick candidates
+// 4. Every candidate's channel is re-checked against its latest uploads (1 unit per channel, plus one
+//    batched videos call per 50 uploads), and only those real scores are kept
+// About 130 quota units per scan with the defaults.
 import { DAY, DEFAULT_SETTINGS, baselines, isOutlier, isShort, scoreVideo } from './score.js';
 
 export const NICHE_DAYS = 30;
-export const REFINE_TOP = 10;
+/** Channels re-checked per scan. Candidates beyond this are dropped rather than shown with a guessed score. */
+export const REFINE_TOP = 20;
+/** Recent uploads read per channel for its real baseline. */
+export const REFINE_UPLOADS = 20;
 /** Videos scoring below this are not kept (the lowest threshold a user can pick is 1.5×). */
 export const KEEP_SCORE = 1.5;
 
@@ -33,26 +37,33 @@ export async function scanNiche(yt, query, { now = Date.now(), settings = DEFAUL
     return { v, base, kind: 'average', score: scoreVideo(v, base, now) };
   });
 
-  // Lifetime averages are skewed by old hits, so re-check the best candidates against recent uploads.
-  const top = [...new Set([...scored].sort((a, b) => b.score - a.score).map((s) => s.v.ytChannelId))].slice(0, refineTop);
-  for (const chId of top) {
+  // Lifetime averages are unreliable (channels grow, old hits skew them), so they only pick candidates.
+  // Each candidate channel is then scored against its recent uploads; nothing is shown on a guess.
+  const candidates = [...new Set([...scored].filter((s) => s.score >= KEEP_SCORE).sort((a, b) => b.score - a.score)
+    .map((s) => s.v.ytChannelId))].slice(0, refineTop);
+  const uploadIds = new Map();
+  for (const chId of candidates) {
     const c = channels.get(chId);
     if (!c?.uploadsPlaylist) continue;
-    try {
-      const uploads = (await yt.videos(await yt.uploads(c.uploadsPlaylist, 30))).filter((u) => !u.live);
-      const base = baselines(uploads, now);
-      for (const s of scored) {
-        if (s.v.ytChannelId !== chId) continue;
-        s.base = base;
-        s.kind = 'median';
-        s.score = scoreVideo(s.v, base, now);
-      }
-    } catch (e) {
+    try { uploadIds.set(chId, await yt.uploads(c.uploadsPlaylist, REFINE_UPLOADS)); } catch (e) {
       if (/quota/i.test(e.message)) throw e;
     }
   }
+  // One batched stats call per 50 uploads, across all the channels.
+  const uploads = (await yt.videos([...new Set([...uploadIds.values()].flat())])).filter((u) => !u.live);
+  const checked = new Set();
+  for (const [chId] of uploadIds) {
+    const base = baselines(uploads.filter((u) => u.ytChannelId === chId), now);
+    checked.add(chId);
+    for (const s of scored) {
+      if (s.v.ytChannelId !== chId) continue;
+      s.base = base;
+      s.kind = 'median';
+      s.score = scoreVideo(s.v, base, now);
+    }
+  }
 
-  return scored.filter((s) => s.score >= KEEP_SCORE).map(({ v, base, kind, score }) => {
+  return scored.filter((s) => checked.has(s.v.ytChannelId) && s.score >= KEEP_SCORE).map(({ v, base, kind, score }) => {
     const c = channels.get(v.ytChannelId);
     const short = isShort(v);
     return {
