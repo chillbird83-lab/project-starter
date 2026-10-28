@@ -78,7 +78,23 @@ Create a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
 
 **Privacy:** on Gemini's free tier, Google may use what you send to improve its products. Receipts are financial data, so switch the key to a paid (pay-as-you-go) project before real customers use the app. Flash is very cheap per receipt.
 
-### 4. Cloudflare — R2 and the Worker
+### 4a. Easiest: deploy from GitHub (no command line)
+
+[`.github/workflows/shoebox-deploy.yml`](../.github/workflows/shoebox-deploy.yml) deploys on every push that changes `shoebox/`. You can also run it by hand from the **Actions** tab.
+
+1. **Cloudflare dashboard → Workers & Pages.** Open it once so your free `*.workers.dev` subdomain is created.
+2. **R2 → enable R2**, for receipt photos. Cloudflare asks for a payment method even on the free tier. Without R2 the app still deploys, in "this device only" mode.
+3. **My Profile → API Tokens → Create Token** → template **"Edit Cloudflare Workers"**. Copy the token. Your **Account ID** is on the Workers & Pages overview page.
+4. **GitHub repo → Settings → Secrets and variables → Actions**:
+   - **Secrets:** `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (required). Optionally `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`.
+   - **Variables** (optional): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `EMAIL_FROM`, `APP_URL` and `GEMINI_MODEL`.
+5. **Actions → Deploy Shoebox to Cloudflare → Run workflow**, or re-run the last run. The run summary shows the app's address.
+
+Add more secrets or variables later and re-run the workflow. That is how the app goes from "this device only" to accounts, cloud photos and email.
+
+### 4b. Or deploy from your computer
+
+#### Cloudflare — R2 and the Worker
 
 ```bash
 cd shoebox

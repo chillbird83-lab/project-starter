@@ -20,7 +20,7 @@ const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
 const fail = (status, error) => json({ error }, status);
 
-const cloudReady = (env) => !!(env.SUPABASE_URL && env.SUPABASE_ANON_KEY);
+const cloudReady = (env) => !!(env.SUPABASE_URL && env.SUPABASE_ANON_KEY && env.RECEIPTS);
 const emailReady = (env) => !!(env.RESEND_API_KEY && env.EMAIL_FROM);
 // Legacy service_role keys are JWTs and also go in Authorization; new sb_secret_ keys only go in apikey.
 const serviceHeaders = (env) => {
