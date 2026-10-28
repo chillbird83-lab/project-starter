@@ -10,8 +10,9 @@ directory = "./public"
 binding = "ASSETS"
 
 # Every 15 minutes: re-check the channels that are due (each one every REFRESH_HOURS) and send alerts.
+# Hourly at :07 — scan one niche that is due (each one every NICHE_REFRESH_HOURS).
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/15 * * * *", "7 * * * *"]
 
 [vars]
 # Supabase → Project Settings → API. The anon key is public by design; row-level security protects the data.
@@ -27,3 +28,6 @@ MAX_CHANNELS = "30"
 REFRESH_HOURS = "4"
 BATCH_SIZE = "6"
 ANALYSES_PER_DAY = "25"
+# Niche scans cost about 122 units each (a YouTube search is 100).
+NICHE_REFRESH_HOURS = "12"
+MAX_NICHES = "8"

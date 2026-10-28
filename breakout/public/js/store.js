@@ -88,7 +88,19 @@ export async function saveNiche(niche) {
 
 export async function deleteNiche(id) {
   await backend.deleteNiche(id);
-  set({ niches: state.niches.filter((n) => n.id !== id), channels: state.channels.map((c) => (c.nicheId === id ? { ...c, nicheId: null } : c)) });
+  set({
+    niches: state.niches.filter((n) => n.id !== id),
+    channels: state.channels.map((c) => (c.nicheId === id ? { ...c, nicheId: null } : c)),
+    videos: state.videos.filter((v) => v.channelId || v.nicheId !== id),
+  });
+}
+
+/** Searches YouTube for the niche's outliers and merges what it finds. */
+export async function scanNiche(id) {
+  const r = await backend.scanNiche(id);
+  merge({ videos: r.videos });
+  set({ niches: state.niches.map((n) => (n.id === id ? { ...n, ...r.niche } : n)) });
+  return r;
 }
 
 export async function moveChannel(id, nicheId) {

@@ -1,6 +1,6 @@
 # Breakout — YouTube niche & competitor tracker
 
-Track the channels in your niche. Breakout learns what each channel's videos **normally** get, flags the ones that **break out**, and uses AI to explain **why they worked**, with three ideas you could make next. New breakouts arrive as **Telegram alerts**.
+Describe your niche, or track specific channels. Breakout finds the videos that **break out**: the ones beating their own channel's **normal** views, **from any channel**. It uses AI to explain **why they worked**, with three ideas you could make next. You can **watch them right in the app**, and new breakouts arrive as **Telegram alerts**.
 
 It is an installable phone app (PWA) that runs on free tiers:
 
@@ -14,7 +14,18 @@ It is an installable phone app (PWA) that runs on free tiers:
 
 **No-setup mode:** choose *Use without an account* and paste your own free YouTube key (and a Gemini key for the analysis). Everything is stored on that device, and channels are checked whenever you open the app. Telegram alerts need the server.
 
-## How outliers are found
+## Two ways to find outliers
+
+- **Niches (no competitors needed):** give a niche a few search words, e.g. "meal prep, budget recipes". Breakout searches YouTube for the niche's most-watched videos of the last 30 days and keeps the ones beating their own channel's normal. Small channels with one big hit stand out the most.
+  - The scan first compares each video with its channel's lifetime average views per video.
+  - It then re-checks the 10 most promising channels against their recent uploads, which is more accurate.
+  - About **122 quota units per scan**, because a YouTube search costs 100.
+  - Each niche is searched again every 12 hours, or when you tap refresh (at most once an hour).
+- **Tracked channels:** follow specific competitors closely. They're checked every 4 hours, at 3 units each. From any outlier, tap **Track this channel**.
+
+Tap a video to **play it inside the app** (YouTube's embedded player). A few videos have embedding turned off by their owner; use **Open in YouTube** for those.
+
+## How outliers are scored
 
 - **Tracking:** for every tracked channel, Breakout reads the latest 50 uploads.
 - **Typical views:** the channel's typical views is the **median of its videos that are at least a week old**, worked out separately for long-form videos and Shorts (up to 3 minutes). A single viral hit doesn't skew it.
@@ -101,8 +112,10 @@ These are set in `wrangler.toml` `[vars]`:
 | `BATCH_SIZE` | 6 | Channels per 15-minute run, which keeps each run inside Workers' free-plan limits |
 | `MAX_CHANNELS` | 30 | Per user |
 | `ANALYSES_PER_DAY` | 25 | Per user, to protect the shared Gemini quota |
+| `NICHE_REFRESH_HOURS` | 12 | How often each niche is searched (one niche per hourly run) |
+| `MAX_NICHES` | 8 | Niches with search words per user |
 
-**Quota maths:** one check costs 3 units, and each channel is checked 6 times a day, so it uses 18 units a day. The free 10,000 units/day therefore covers about **550 tracked channels** across all users. Each 15-minute run handles 6 channels, which is up to 576 checks a day. That keeps up with about 96 channels at the 4-hour interval. Beyond that, raise `BATCH_SIZE` (paid Workers plans allow more subrequests) or `REFRESH_HOURS`.
+**Quota maths:** a niche scan costs about 122 units and runs twice a day, so a niche uses about 244 units a day: 20 niches use about half the free quota. A channel check costs 3 units, and each channel is checked 6 times a day, so it uses 18 units a day. The free 10,000 units/day therefore covers about **550 tracked channels** across all users. Each 15-minute run handles 6 channels, which is up to 576 checks a day. That keeps up with about 96 channels at the 4-hour interval. Beyond that, raise `BATCH_SIZE` (paid Workers plans allow more subrequests) or `REFRESH_HOURS`.
 
 Adding a channel by an old-style `/c/` link uses YouTube search (100 units). @handles, channel links and video links cost 1–2 units.
 
@@ -115,9 +128,11 @@ phone (PWA)
   └─ Worker /api/*  ── checks the session, holds the YouTube / Gemini / Telegram keys
         ├─ /channels  resolve @handle/link → latest 50 uploads → typical views → scores
         ├─ /refresh   re-check now (rate-limited to once every 10 minutes)
+        ├─ /niches/scan  search a niche for outliers from any channel (once per 30 minutes)
         ├─ /analyse   thumbnail + stats + top comments + the channel's other titles → Gemini → saved
         └─ /telegram  link codes, webhook (/start, /stop, "Why did it work?" button)
   cron */15 min → channels due for a check → new breakouts → Telegram
+  cron hourly   → one niche due for a search → new breakouts → Telegram
 ```
 
 | Path | Purpose |
@@ -126,6 +141,7 @@ phone (PWA)
 | `public/js/youtube.js` | YouTube client: parses any channel/video link, quota-aware calls, friendly errors |
 | `public/js/analyse.js` | Gemini prompt, response schema and clean-up for "Why did it work?" |
 | `public/js/tracker.js` | One channel check (3 units) |
+| `public/js/discover.js` | Niche scan: search → stats → lifetime-average score → re-check the top channels (≈122 units) |
 | `public/js/backend.js` | Cloud backend (Supabase over plain `fetch` + the Worker) and the own-keys backend (IndexedDB) |
 | `worker/index.js`, `worker/telegram.js` | API, cron and Telegram |
 | `supabase/schema.sql` | Tables, row-level security and column-level update rights |

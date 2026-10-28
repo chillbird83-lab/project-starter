@@ -6,6 +6,9 @@ create table if not exists public.niches (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
   name       text not null check (char_length(name) between 1 and 40),
+  -- Search words for finding outliers from any channel ("meal prep, budget recipes"). Empty = just a group.
+  keywords   text not null default '' check (char_length(keywords) <= 200),
+  scanned_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -31,8 +34,16 @@ create index if not exists channels_due on public.channels (checked_at nulls fir
 create table if not exists public.videos (
   id           uuid primary key default gen_random_uuid(),
   user_id      uuid not null default auth.uid() references auth.users (id) on delete cascade,
-  channel_id   uuid not null references public.channels (id) on delete cascade,
+  -- Set for videos of tracked channels; empty for videos found by a niche scan.
+  channel_id   uuid references public.channels (id) on delete cascade,
+  niche_id     uuid references public.niches (id) on delete cascade,
+  source       text not null default 'channel' check (source in ('channel', 'search')),
   yt_video_id  text not null,
+  yt_channel_id text not null default '',
+  channel_title text not null default '',
+  channel_subs bigint,
+  baseline     bigint not null default 0,
+  baseline_kind text not null default 'median' check (baseline_kind in ('median', 'average')),
   title        text not null default '',
   description  text not null default '',
   tags         text[] not null default '{}',
@@ -54,6 +65,20 @@ create table if not exists public.videos (
 );
 create index if not exists videos_channel on public.videos (channel_id, published_at desc);
 create index if not exists videos_outliers on public.videos (user_id, is_outlier, published_at desc);
+create index if not exists videos_niche on public.videos (niche_id);
+create index if not exists niches_due on public.niches (scanned_at nulls first);
+
+-- Upgrading a database made with the first version of this file:
+alter table public.niches add column if not exists keywords text not null default '';
+alter table public.niches add column if not exists scanned_at timestamptz;
+alter table public.videos alter column channel_id drop not null;
+alter table public.videos add column if not exists niche_id uuid references public.niches (id) on delete cascade;
+alter table public.videos add column if not exists source text not null default 'channel';
+alter table public.videos add column if not exists yt_channel_id text not null default '';
+alter table public.videos add column if not exists channel_title text not null default '';
+alter table public.videos add column if not exists channel_subs bigint;
+alter table public.videos add column if not exists baseline bigint not null default 0;
+alter table public.videos add column if not exists baseline_kind text not null default 'median';
 
 create table if not exists public.profiles (
   user_id         uuid primary key default auth.uid() references auth.users (id) on delete cascade,
@@ -96,6 +121,8 @@ create policy "delete own channels" on public.channels for delete to authenticat
 
 drop policy if exists "read own videos" on public.videos;
 create policy "read own videos" on public.videos for select to authenticated using (user_id = (select auth.uid()));
+drop policy if exists "delete own videos" on public.videos;
+create policy "delete own videos" on public.videos for delete to authenticated using (user_id = (select auth.uid()));
 drop policy if exists "update own videos" on public.videos;
 create policy "update own videos" on public.videos for update to authenticated
   using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));

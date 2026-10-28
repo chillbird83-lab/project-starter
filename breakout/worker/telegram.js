@@ -22,12 +22,12 @@ export async function webhookSecret(env) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 48);
 }
 
-export function alertMessage(video, channel, now = Date.now()) {
+export function alertMessage(video, channel, now = Date.now(), niche = '') {
   const baseline = video.isShort ? channel.baselineShort : channel.baselineLong;
   return {
     parse_mode: 'HTML',
     text: [
-      `🚀 <b>${scoreLabel(video.score)} typical views</b> · ${h(channel.title)}${video.isShort ? ' · Short' : ''}`,
+      `🚀 <b>${scoreLabel(video.score)} typical views</b> · ${h(channel.title)}${video.isShort ? ' · Short' : ''}${niche ? ` · in “${h(niche)}”` : ''}`,
       `<b>${h(video.title)}</b>`,
       `${compact(video.views)} views in ${age(video.publishedAt, now)} (usually ~${compact(baseline)})`,
       videoURL(video.ytVideoId),

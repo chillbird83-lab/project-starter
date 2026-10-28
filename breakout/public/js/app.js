@@ -1,12 +1,15 @@
 import { cloudBackend, loadConfig, localBackend, preferLocal, setPreferLocal } from './backend.js';
 import { closeSheet, sheetOpen, toast } from './overlay.js';
-import { openAddChannel, openChannel, openNiches, openOnboarding, openSettings, openVideo } from './sheets.js';
+import { openAddChannel, openAddMenu, openChannel, openNicheEditor, openNiches, openOnboarding, openSettings, openVideo } from './sheets.js';
 import * as store from './store.js';
 import { $, $$, esc } from './util.js';
 import { channelsView, loadingView, outlierList, outliersView, signInView } from './views.js';
 
 const VIEWS = { outliers: outliersView, channels: channelsView };
 const LOCAL_REFRESH_HOURS = 3;
+/** Niche searches cost ~122 quota units, so they repeat less often than channel checks. */
+const LOCAL_NICHE_HOURS = 12;
+const MANUAL_NICHE_HOURS = 1;
 const view = $('#view');
 const navTitle = $('#nav-title');
 
@@ -20,6 +23,13 @@ const app = {
   afterAdd(channel) {
     ui.niche = channel.nicheId ?? 'all';
     if (ui.tab !== 'outliers') { ui.tab = 'outliers'; enter = true; }
+    render();
+  },
+  showNiche(id) {
+    ui.niche = id;
+    ui.limit = 40;
+    if (ui.tab !== 'outliers') { ui.tab = 'outliers'; enter = true; }
+    window.scrollTo(0, 0);
     render();
   },
   async signOut() {
@@ -50,15 +60,33 @@ const app = {
   },
 };
 
-async function refreshAll({ quiet = false, staleHours = 0 } = {}) {
-  if (ui.refreshing || !store.get().channels.length) return;
+/** Re-checks tracked channels and re-searches niches that haven't been searched for `nicheHours`. */
+async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_NICHE_HOURS } = {}) {
+  const { channels, niches } = store.get();
+  const cutoff = Date.now() - nicheHours * 36e5;
+  const dueNiches = niches.filter((n) => n.keywords && (!n.scannedAt || Date.parse(n.scannedAt) < cutoff));
+  if (ui.refreshing || (!channels.length && !dueNiches.length)) {
+    if (!quiet && !ui.refreshing) toast('Everything was checked in the last hour.');
+    return;
+  }
   ui.refreshing = true;
   render();
+  const done = [], errors = [];
   try {
-    const r = await store.refresh(undefined, { staleHours });
-    if (!quiet) toast(r.errors?.length ? r.errors[0] : `Checked ${r.channels.length} channel${r.channels.length === 1 ? '' : 's'}`);
-  } catch (e) {
-    if (!quiet) toast(e.message);
+    if (channels.length) {
+      const r = await store.refresh(undefined, { staleHours });
+      if (r.channels.length) done.push(`${r.channels.length} channel${r.channels.length === 1 ? '' : 's'}`);
+      errors.push(...(r.errors || []));
+    }
+  } catch (e) { errors.push(e.message); }
+  for (const n of dueNiches) {
+    try { await store.scanNiche(n.id); done.push(n.name); } catch (e) {
+      errors.push(`${n.name}: ${e.message}`);
+      if (/quota/i.test(e.message)) break;
+    }
+  }
+  try {
+    if (!quiet) toast(errors.length ? errors[0] : done.length ? `Checked ${done.join(', ')}` : 'Up to date');
   } finally {
     ui.refreshing = false;
     render();
@@ -101,11 +129,13 @@ document.addEventListener('click', (e) => {
   const { action, value, id } = el.dataset;
   switch (action) {
     case 'tab': setTab(el.dataset.tab); break;
-    case 'add': openAddChannel(app, el.dataset.niche ? { nicheId: el.dataset.niche } : undefined); break;
+    case 'add': openAddMenu(app); break;
+    case 'add-channel': openAddChannel(app, el.dataset.niche ? { nicheId: el.dataset.niche } : undefined); break;
+    case 'add-niche': openNicheEditor(app); break;
     case 'settings': openSettings(app); break;
     case 'video': openVideo(app, id); break;
     case 'channel': openChannel(app, id); break;
-    case 'niches': openNiches(); break;
+    case 'niches': openNiches(app); break;
     case 'niche': ui.niche = value; ui.limit = 40; render(); break;
     case 'period': ui.period = Number(value); ui.limit = 40; render(); break;
     case 'kind': ui.kind = value; render(); break;
@@ -158,9 +188,12 @@ function maybeOnboard() { if (!store.get().settings.onboarded) openOnboarding(ap
 
 /** This-device mode has no server checking in the background, so check when the app opens. */
 function maybeLocalRefresh() {
-  const { settings, channels } = store.get();
-  const cutoff = Date.now() - LOCAL_REFRESH_HOURS * 36e5;
-  if (settings.youtubeKey && channels.some((c) => !c.checkedAt || Date.parse(c.checkedAt) < cutoff)) refreshAll({ quiet: true, staleHours: LOCAL_REFRESH_HOURS });
+  const { settings, channels, niches } = store.get();
+  if (!settings.youtubeKey) return;
+  const stale = (iso, hours) => !iso || Date.parse(iso) < Date.now() - hours * 36e5;
+  if (channels.some((c) => stale(c.checkedAt, LOCAL_REFRESH_HOURS)) || niches.some((n) => n.keywords && stale(n.scannedAt, LOCAL_NICHE_HOURS))) {
+    refreshAll({ quiet: true, staleHours: LOCAL_REFRESH_HOURS, nicheHours: LOCAL_NICHE_HOURS });
+  }
 }
 
 async function openData() {

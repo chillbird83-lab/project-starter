@@ -2,15 +2,20 @@
 //   GET    /api/config              what is switched on (+ the public Supabase URL and anon key)
 //   POST   /api/channels            { input, nicheId } track a channel: resolve it, score its uploads
 //   POST   /api/refresh             { channelId? } re-check now (rate-limited)
+//   POST   /api/niches/scan         { nicheId } find outliers from any channel for a niche's search words
 //   POST   /api/analyse             { videoId, force? } Gemini: why did this video work?
 //   POST   /api/telegram/link       a t.me link that connects the user's Telegram chat
 //   POST   /api/telegram/unlink | /api/telegram/test
 //   POST   /api/telegram/webhook    called by Telegram (/start <code>, /stop, "Why did it work?" buttons)
 //   DELETE /api/account
-// A cron every 15 minutes re-checks the channels that are due and sends Telegram alerts.
+// Crons: every 15 minutes re-check the channels that are due; hourly scan one niche that is due.
+// Both send Telegram alerts for new breakouts.
 import { analyseVideo } from '../public/js/analyse.js';
+import { nicheQuery, scanNiche } from '../public/js/discover.js';
 import { DEFAULT_MODEL } from '../public/js/gemini.js';
-import { channelToRow, rowToChannel, rowToVideo, settingsFromProfile, videoToRow } from '../public/js/rows.js';
+import {
+  channelToRow, discoveryToRow, pseudoChannel, rowToChannel, rowToNiche, rowToVideo, settingsFromProfile, videoToRow,
+} from '../public/js/rows.js';
 import { shouldAlert } from '../public/js/score.js';
 import { refreshChannel } from '../public/js/tracker.js';
 import { YouTubeError, ytClient } from '../public/js/youtube.js';
@@ -18,6 +23,8 @@ import { alertMessage, analysisMessage, tg, webhookSecret } from './telegram.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MANUAL_REFRESH_MINUTES = 10;
+const MANUAL_SCAN_MINUTES = 30;
+export const NICHE_CRON = '7 * * * *';
 const MAX_ALERTS_PER_CHANNEL = 3;
 const LINK_CODE_MINUTES = 60;
 
@@ -33,6 +40,8 @@ const limits = (env) => ({
   batch: intVar(env.BATCH_SIZE, 6),
   refreshHours: intVar(env.REFRESH_HOURS, 4),
   analysesPerDay: intVar(env.ANALYSES_PER_DAY, 25),
+  nicheHours: intVar(env.NICHE_REFRESH_HOURS, 12),
+  maxNiches: intVar(env.MAX_NICHES, 8),
 });
 
 // ---------------------------------------------------------------------------
@@ -100,18 +109,76 @@ export async function processChannel(env, row, { settings, chatId = null, seed =
   }
   const channel = rowToChannel(chRow ?? { ...row, ...channelToRow(out.channel) });
   const videos = videoRows.map(rowToVideo);
-  let alerted = 0;
-  if (!seed && chatId && settings.alerts && telegramReady(env)) {
-    const fresh = videos.filter((v) => shouldAlert(v, now)).sort((a, b) => b.score - a.score).slice(0, MAX_ALERTS_PER_CHANNEL);
-    const sent = [];
-    for (const v of fresh) if ((await tg(env, 'sendMessage', { chat_id: chatId, ...alertMessage(v, channel, now) })).ok) sent.push(v.id);
-    if (sent.length) {
-      await sb(env, `videos?id=in.(${sent.join(',')})`, { method: 'PATCH', body: { alerted_at: nowIso } });
-      for (const v of videos) if (sent.includes(v.id)) v.alertedAt = nowIso;
-    }
-    alerted = sent.length;
-  }
+  const alerted = seed ? 0 : await sendAlerts(env, videos, { chatId, settings, now, channelFor: () => channel });
   return { channel, videos, alerted };
+}
+
+/** Telegram alerts for fresh, not-yet-alerted outliers; marks them as alerted. Returns how many were sent. */
+async function sendAlerts(env, videos, { chatId, settings, now, channelFor, label }) {
+  if (!chatId || !settings.alerts || !telegramReady(env)) return 0;
+  const nowIso = new Date(now).toISOString();
+  const fresh = videos.filter((v) => shouldAlert(v, now)).sort((a, b) => b.score - a.score).slice(0, MAX_ALERTS_PER_CHANNEL);
+  const sent = [];
+  for (const v of fresh) if ((await tg(env, 'sendMessage', { chat_id: chatId, ...alertMessage(v, channelFor(v), now, label) })).ok) sent.push(v.id);
+  if (sent.length) {
+    await sb(env, `videos?id=in.(${sent.join(',')})`, { method: 'PATCH', body: { alerted_at: nowIso } });
+    for (const v of videos) if (sent.includes(v.id)) v.alertedAt = nowIso;
+  }
+  return sent.length;
+}
+
+/** Scans one niche for outliers from any channel (skipping channels the user already tracks). */
+export async function processNiche(env, niche, { settings, chatId = null, now = Date.now() }) {
+  const nowIso = new Date(now).toISOString();
+  const tracked = new Set((await sb(env, `channels?select=yt_channel_id&user_id=eq.${niche.user_id}`)).map((c) => c.yt_channel_id));
+  const found = (await scanNiche(ytClient(env.YOUTUBE_API_KEY), nicheQuery(niche), { now, settings }))
+    .filter((v) => !tracked.has(v.ytChannelId));
+  const seed = !niche.scanned_at; // the first scan's finds are not "new", so no alert flood
+  let rows = [];
+  if (found.length) {
+    rows = await sb(env, 'videos?on_conflict=user_id,yt_video_id', {
+      method: 'POST',
+      prefer: 'resolution=merge-duplicates,return=representation',
+      body: found.map((v) => ({
+        ...discoveryToRow(v), user_id: niche.user_id, niche_id: niche.id, updated_at: nowIso,
+        ...(seed ? { alerted_at: v.isOutlier ? nowIso : null } : {}),
+      })),
+    });
+  }
+  await sb(env, `niches?id=eq.${niche.id}`, { method: 'PATCH', body: { scanned_at: nowIso } });
+  const videos = rows.map(rowToVideo);
+  const alerted = seed ? 0 : await sendAlerts(env, videos, { chatId, settings, now, channelFor: pseudoChannel, label: niche.name });
+  return { niche: rowToNiche({ ...niche, scanned_at: nowIso }), videos, alerted };
+}
+
+/** Only a user's first MAX_NICHES niches with search words are scanned, to protect the shared quota. */
+async function nicheAllowed(env, niche) {
+  const list = await sb(env, `niches?select=id&user_id=eq.${niche.user_id}&keywords=neq.&order=created_at.asc&limit=${limits(env).maxNiches}`);
+  return list.some((n) => n.id === niche.id);
+}
+
+/** Hourly cron: the niche whose last scan is oldest, if it is due. */
+export async function runNicheScan(env, now = Date.now()) {
+  if (!cloudReady(env)) return { scanned: 0 };
+  const cutoff = new Date(now - limits(env).nicheHours * 36e5).toISOString();
+  const due = await sb(env, `niches?select=*&keywords=neq.&or=(scanned_at.is.null,scanned_at.lt.${cutoff})&order=scanned_at.asc.nullsfirst&limit=3`);
+  for (const niche of due) {
+    if (!(await nicheAllowed(env, niche))) {
+      await sb(env, `niches?id=eq.${niche.id}`, { method: 'PATCH', body: { scanned_at: new Date(now).toISOString() } });
+      continue;
+    }
+    const [profile] = await sb(env, `profiles?select=*&user_id=eq.${niche.user_id}`);
+    const chatId = telegramReady(env) ? await chatIdFor(env, niche.user_id) : null;
+    try {
+      const r = await processNiche(env, niche, { settings: settingsFromProfile(profile ?? {}), chatId, now });
+      return { scanned: 1, found: r.videos.length, alerted: r.alerted };
+    } catch (e) {
+      console.error('niche scan failed', niche.id, e.message);
+      if (!/quota/i.test(e.message)) await sb(env, `niches?id=eq.${niche.id}`, { method: 'PATCH', body: { scanned_at: new Date(now).toISOString() } }).catch(() => {});
+      return { scanned: 0, error: e.message };
+    }
+  }
+  return { scanned: 0 };
 }
 
 /** Cron: the channels whose last check is oldest, a few at a time to stay inside Worker limits. */
@@ -200,9 +267,33 @@ async function refresh(request, env, user) {
   return json({ channels: results.map((r) => r.channel), videos: results.flatMap((r) => r.videos), errors });
 }
 
+async function scanNicheNow(request, env, user) {
+  const body = await request.json().catch(() => ({}));
+  if (!UUID_RE.test(body.nicheId || '')) return fail(400, 'Unknown niche.');
+  const [niche] = await sb(env, `niches?select=*&id=eq.${body.nicheId}&user_id=eq.${user.id}`);
+  if (!niche) return fail(404, 'Unknown niche.');
+  if (!nicheQuery({ keywords: niche.keywords })) return fail(400, 'Add search words to this niche first.');
+  if (niche.scanned_at && Date.now() - Date.parse(niche.scanned_at) < MANUAL_SCAN_MINUTES * 6e4) {
+    return fail(429, `${niche.name} was scanned a few minutes ago. Niche scans use a lot of YouTube quota, so try again in ${MANUAL_SCAN_MINUTES} minutes.`);
+  }
+  if (!(await nicheAllowed(env, niche))) return fail(403, `Only your first ${limits(env).maxNiches} niches with search words are scanned.`);
+  const profile = await loadProfile(env, user.id);
+  const chatId = telegramReady(env) ? await chatIdFor(env, user.id) : null;
+  try {
+    return json(await processNiche(env, niche, { settings: settingsFromProfile(profile ?? {}), chatId }));
+  } catch (e) {
+    return fail(e instanceof YouTubeError ? 503 : 502, e.message);
+  }
+}
+
 async function loadForAnalysis(env, videoId) {
   const [v] = await sb(env, `videos?select=*&id=eq.${videoId}`);
   if (!v) return null;
+  if (!v.channel_id) {
+    // Found by a niche scan: fetch that channel's recent uploads for the comparison (3 quota units).
+    const ctx = await refreshChannel(ytClient(env.YOUTUBE_API_KEY), v.yt_channel_id);
+    return { row: v, video: rowToVideo(v), channel: ctx.channel, others: ctx.videos.filter((o) => o.ytVideoId !== v.yt_video_id).slice(0, 15) };
+  }
   const [[c], others] = await Promise.all([
     sb(env, `channels?select=*&id=eq.${v.channel_id}`),
     sb(env, `videos?select=title,views,score,yt_video_id&channel_id=eq.${v.channel_id}&id=neq.${videoId}&order=published_at.desc&limit=15`),
@@ -305,6 +396,7 @@ async function route(request, env, ctx, url) {
       cloud: cloudReady(env), supabaseUrl: env.SUPABASE_URL || '', supabaseAnonKey: env.SUPABASE_ANON_KEY || '',
       ai: !!env.GEMINI_API_KEY, telegram: telegramReady(env), botUsername: env.TELEGRAM_BOT_USERNAME || '',
       maxChannels: limits(env).maxChannels, refreshHours: limits(env).refreshHours,
+      maxNiches: limits(env).maxNiches, nicheHours: limits(env).nicheHours,
     });
   }
   if (!cloudReady(env)) return fail(503, 'The server isn’t set up yet.');
@@ -314,6 +406,7 @@ async function route(request, env, ctx, url) {
   if (method === 'POST' && pathname === '/api/channels') return addChannel(request, env, user);
   if (method === 'POST' && pathname === '/api/refresh') return refresh(request, env, user);
   if (method === 'POST' && pathname === '/api/analyse') return analyse(request, env, user);
+  if (method === 'POST' && pathname === '/api/niches/scan') return scanNicheNow(request, env, user);
   if (pathname.startsWith('/api/telegram/') && !telegramReady(env)) return fail(503, 'Telegram isn’t set up on this server.');
   if (method === 'POST' && pathname === '/api/telegram/link') return telegramLink(env, user);
   if (method === 'POST' && pathname === '/api/telegram/unlink') {
@@ -345,6 +438,7 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runScheduled(env, event.scheduledTime).then((r) => console.log('cron', JSON.stringify(r))));
+    const job = event.cron === NICHE_CRON ? runNicheScan : runScheduled;
+    ctx.waitUntil(job(env, event.scheduledTime).then((r) => console.log('cron', event.cron, JSON.stringify(r))));
   },
 };

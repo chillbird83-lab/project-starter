@@ -1,5 +1,5 @@
 // YouTube Data API v3 client. Quota-friendly: a channel refresh costs 3 units (channels, playlistItems,
-// videos); search.list (100 units) is only used to resolve old-style /c/ custom URLs.
+// videos). search.list costs 100 units: used for niche scans and to resolve old-style /c/ custom URLs.
 // Shared by the Worker (server key) and this-device mode (the user's own key).
 
 const API = 'https://www.googleapis.com/youtube/v3/';
@@ -49,6 +49,7 @@ export function mapChannel(item) {
     thumb: (item.snippet?.thumbnails?.medium || item.snippet?.thumbnails?.default || {}).url || '',
     subscribers: item.statistics?.hiddenSubscriberCount ? null : num(item.statistics?.subscriberCount),
     videoCount: num(item.statistics?.videoCount),
+    totalViews: num(item.statistics?.viewCount),
     uploadsPlaylist: item.contentDetails?.relatedPlaylists?.uploads ?? (item.id ? `UU${item.id.slice(2)}` : ''),
   };
 }
@@ -123,6 +124,23 @@ export function ytClient(apiKey, fetchImpl = fetch) {
       }
       if (!ch) throw new YouTubeError('No YouTube channel found for that.');
       return ch;
+    },
+    /** Several channels by ID (1 unit per 50). */
+    async channels(ids) {
+      const out = [];
+      for (let i = 0; i < ids.length; i += 50) {
+        const body = await get('channels', { part: 'snippet,statistics,contentDetails', id: ids.slice(i, i + 50).join(','), maxResults: '50' });
+        out.push(...(body.items ?? []).map(mapChannel));
+      }
+      return out;
+    },
+    /** Video IDs matching a search (100 units). */
+    async searchVideos(q, { publishedAfter, order = 'viewCount', max = 50 } = {}) {
+      const body = await get('search', {
+        part: 'id', type: 'video', q, order, maxResults: String(Math.min(50, max)),
+        ...(publishedAfter ? { publishedAfter } : {}),
+      });
+      return (body.items ?? []).map((i) => i.id?.videoId).filter(Boolean);
     },
     /** IDs of the most recent uploads (newest first). */
     async uploads(playlistId, max = 50) {

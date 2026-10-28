@@ -1,4 +1,4 @@
-// Sheets: add channel, video (with "Why did it work?"), channel, niches, settings, first run.
+// Sheets: add menu, niches, add channel, video (player + "Why did it work?"), channel, settings, first run.
 import { closeSheet, confirmDialog, openSheet, sheetElement, toast } from './overlay.js';
 import { age, compact, scoreLabel } from './rows.js';
 import { engagement, isOutlier } from './score.js';
@@ -28,6 +28,83 @@ async function pickNiche(select) {
 const copy = async (text) => {
   try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Couldn’t copy on this device.'); }
 };
+
+// ---------------------------------------------------------------------------
+// "+" menu and niches
+// ---------------------------------------------------------------------------
+
+export function openAddMenu(app) {
+  const el = openSheet(`${header('Add', { submit: '' })}
+    <div class="options">
+      <button type="button" class="option primary" data-pick="niche"><span aria-hidden="true">🔭</span><b>Find outliers in a niche</b><small>From any channel. Just describe the niche.</small></button>
+      <button type="button" class="option" data-pick="channel"><span aria-hidden="true">📺</span><b>Track a channel</b><small>Follow a specific competitor closely</small></button>
+    </div>`, { label: 'Add' });
+  el.addEventListener('click', (e) => {
+    const pick = e.target.closest('[data-pick]')?.dataset.pick;
+    if (pick === 'niche') openNicheEditor(app);
+    if (pick === 'channel') openAddChannel(app);
+  });
+}
+
+const scanLabel = (n) => (n.scannedAt ? `searched ${age(n.scannedAt, Date.now())} ago` : 'not searched yet');
+
+/** Runs a niche scan with a status line inside the open sheet. */
+async function runScan(app, el, nicheId) {
+  const status = $('#ne-status', el);
+  if (status) status.hidden = false;
+  const r = await store.scanNiche(nicheId);
+  const n = r.videos.filter((v) => isOutlier(v, v.score, store.get().settings)).length;
+  return n;
+}
+
+export function openNicheEditor(app, { id } = {}) {
+  const niche = id ? store.get().niches.find((n) => n.id === id) : null;
+  const max = app.backend.config.maxNiches ?? 8;
+  const el = openSheet(`<form id="ne-form" novalidate>
+    ${header(niche ? niche.name : 'New niche', { submit: niche ? 'Save' : 'Find outliers' })}
+    <div class="card list inset">
+      <label class="row field"><span class="title">Name</span><input id="ne-name" maxlength="40" placeholder="e.g. Home cooking" value="${esc(niche?.name ?? '')}" autocomplete="off" ${niche ? '' : 'autofocus'}></label>
+      <label class="row field"><span class="title">Search for</span><input id="ne-keywords" maxlength="200" placeholder="meal prep, budget recipes" value="${esc(niche?.keywords ?? '')}" autocomplete="off"></label>
+    </div>
+    <p class="hint">What would you type into YouTube to find this niche? Separate a few searches with commas. Breakout looks at the most-watched videos of the last 30 days and keeps the ones beating their own channel’s normal. Leave it empty to use the niche only for grouping channels.${niche ? ` This niche was ${scanLabel(niche)}.` : ''}</p>
+    <p class="hint">Each search uses about 122 of the 10,000 free daily YouTube units. ${app.backend.mode === 'cloud' ? `Niches are searched again about every ${app.backend.config.nicheHours ?? 12} hours (up to ${max} niches).` : 'Niches are searched again when you open the app, at most twice a day.'}</p>
+    <div class="scan-status" id="ne-status" role="status" hidden><span class="spinner" aria-hidden="true"></span> Searching YouTube and checking each channel’s normal…</div>
+    <p class="form-error" id="ne-error" role="alert" hidden></p>
+    ${niche?.keywords ? '<button type="button" class="btn secondary" data-scan>Search again now</button>' : ''}
+    ${niche ? '<button type="button" class="btn danger-text" data-del>Delete niche</button>' : ''}
+  </form>`, { label: niche ? niche.name : 'New niche' });
+  const err = $('#ne-error', el);
+  const fail = (m) => { $('#ne-status', el).hidden = true; err.textContent = m; err.hidden = false; };
+  const finish = (nicheId, n) => {
+    closeSheet();
+    app.showNiche(nicheId);
+    toast(n == null ? 'Saved' : n ? `Found ${n} outlier${n === 1 ? '' : 's'}` : 'No outliers right now. Breakout will keep looking.');
+  };
+  $('#ne-form', el).addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = $('#ne-name', el).value.trim().slice(0, 40);
+    const keywords = $('#ne-keywords', el).value.trim().slice(0, 200);
+    if (!name) { $('#ne-name', el).focus(); return; }
+    const btn = $('button[type="submit"]', el);
+    btn.disabled = true; err.hidden = true;
+    try {
+      const saved = await store.saveNiche({ id: niche?.id, name, keywords });
+      const changed = keywords && (keywords !== niche?.keywords || !niche?.scannedAt);
+      finish(saved.id, changed ? await runScan(app, el, saved.id) : null);
+    } catch (ex) { btn.disabled = false; fail(ex.message); }
+  });
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-scan]')) {
+      const b = e.target.closest('[data-scan]');
+      b.disabled = true; err.hidden = true;
+      try { finish(niche.id, await runScan(app, el, niche.id)); } catch (ex) { b.disabled = false; fail(ex.message); }
+    }
+    if (e.target.closest('[data-del]')) {
+      if (!await confirmDialog({ title: `Delete ${niche.name}?`, message: 'Videos found by its searches are removed. Tracked channels stay, without a niche.', confirmLabel: 'Delete', destructive: true })) return;
+      try { await store.deleteNiche(niche.id); closeSheet(); toast('Deleted'); } catch (ex) { toast(ex.message); }
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Add a channel
@@ -85,51 +162,69 @@ function analysisHTML(a) {
   </div>`;
 }
 
+const EMBED = (id) => `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&playsinline=1&rel=0&modestbranding=1`;
+
 export function openVideo(app, id) {
-  const ctx = () => {
-    const s = store.get();
-    const v = s.videos.find((x) => x.id === id);
-    return { v, c: s.channels.find((x) => x.id === v?.channelId), s };
-  };
-  let { v, c } = ctx();
+  const s = store.get();
+  const v = s.videos.find((x) => x.id === id);
   if (!v) return;
-  const baseline = v.isShort ? c?.baselineShort : c?.baselineLong;
+  const c = s.channels.find((x) => x.id === v.channelId);
+  const channelTitle = c?.title ?? v.channelTitle;
+  const baseline = c ? (v.isShort ? c.baselineShort : c.baselineLong) : v.baseline;
   const e = engagement(v);
   const pct = (r) => (r == null ? '–' : `${(r * 100).toFixed(r < 0.01 ? 2 : 1)}%`);
   const canAnalyse = app.backend.mode === 'local' || app.backend.config.ai;
+  const tracked = !!c || s.channels.some((x) => x.ytChannelId === v.ytChannelId);
   const el = openSheet(`${header('', { cancel: 'Close', submit: '' })}
-    <a class="hero-thumb" href="${esc(videoURL(v.ytVideoId))}" target="_blank" rel="noopener">${v.thumb ? `<img src="${esc(v.thumb)}" alt="Thumbnail" referrerpolicy="no-referrer">` : ''}<b class="badge big ${heat(v.score)}">${scoreLabel(v.score)}</b><i class="play" aria-hidden="true">▶</i></a>
+    <div class="player ${v.isShort ? 'short' : ''}" id="v-player">
+      <button type="button" class="hero-thumb" data-play aria-label="Play video">${v.thumb ? `<img src="${esc(v.thumb)}" alt="" referrerpolicy="no-referrer">` : ''}<b class="badge big ${heat(v.score)}">${scoreLabel(v.score)}</b><i class="play" aria-hidden="true">▶</i></button>
+    </div>
     <h2 class="v-title">${esc(v.title)}</h2>
-    <p class="muted small">${esc(c?.title ?? '')} · ${new Date(v.publishedAt).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+    <p class="muted small">${esc(channelTitle)}${!c && v.channelSubs != null ? ` (${compact(v.channelSubs)} subs)` : ''} · ${new Date(v.publishedAt).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
     <dl class="stats stats-grid">
       <div><dt>Views</dt><dd>${compact(v.views)}</dd></div>
-      <div><dt>Typical</dt><dd>${compact(baseline)}</dd></div>
+      <div><dt>${v.baselineKind === 'average' && !c ? 'Channel avg' : 'Typical'}</dt><dd>${compact(baseline)}</dd></div>
       <div><dt>Age</dt><dd>${age(v.publishedAt, Date.now())}</dd></div>
       <div><dt>Likes</dt><dd>${pct(e.likeRate)}</dd></div>
       <div><dt>Comments</dt><dd>${pct(e.commentRate)}</dd></div>
       <div><dt>${v.isShort ? 'Short' : 'Length'}</dt><dd>${duration(v.durationS)}</dd></div>
     </dl>
     <div class="btn-row">
-      <a class="btn secondary" href="${esc(videoURL(v.ytVideoId))}" target="_blank" rel="noopener">Watch</a>
+      <a class="btn secondary" href="${esc(videoURL(v.ytVideoId))}" target="_blank" rel="noopener">Open in YouTube</a>
       <button type="button" class="btn secondary" data-save>${v.saved ? '★ Saved' : '☆ Save'}</button>
     </div>
+    ${!tracked && v.ytChannelId ? `<button type="button" class="btn secondary" data-track>📺 Track ${esc(channelTitle || 'this channel')}</button>` : ''}
     <div id="v-analysis">${v.analysis ? analysisHTML(v.analysis) : canAnalyse ? '<button type="button" class="btn primary ai-btn" data-analyse>🧠 Why did it work?</button>' : '<p class="hint">AI analysis isn’t set up on this server yet.</p>'}</div>
     ${v.analysis ? '<button type="button" class="link small center-link" data-analyse data-force="1">Analyse again</button>' : ''}`, { label: v.title, focus: false });
 
   el.addEventListener('click', async (ev) => {
+    if (ev.target.closest('[data-play]')) {
+      $('#v-player', el).innerHTML = `<iframe src="${esc(EMBED(v.ytVideoId))}" title="${esc(v.title)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+      return;
+    }
     const cp = ev.target.closest('[data-copy]');
     if (cp) { copy(cp.dataset.copy); return; }
     if (ev.target.closest('[data-save]')) {
-      ({ v } = ctx());
+      const cur = store.get().videos.find((x) => x.id === id);
       const b = ev.target.closest('[data-save]');
-      try { await store.setSaved(v.id, !v.saved); b.textContent = !v.saved ? '★ Saved' : '☆ Save'; haptic(); } catch (err) { toast(err.message); }
+      try { await store.setSaved(id, !cur.saved); b.textContent = !cur.saved ? '★ Saved' : '☆ Save'; haptic(); } catch (err) { toast(err.message); }
+      return;
+    }
+    if (ev.target.closest('[data-track]')) {
+      const b = ev.target.closest('[data-track]');
+      b.disabled = true; b.textContent = 'Adding…';
+      try {
+        const r = await store.addChannel(v.ytChannelId, v.nicheId);
+        b.remove();
+        toast(`Now tracking ${r.channel.title}`);
+      } catch (err) { b.disabled = false; b.textContent = `📺 Track ${channelTitle}`; toast(err.message); }
       return;
     }
     const an = ev.target.closest('[data-analyse]');
     if (an) {
       const box = $('#v-analysis', el);
       box.innerHTML = '<div class="scan-status"><span class="spinner" aria-hidden="true"></span> Comparing it with the channel’s other videos…</div>';
-      an.closest('.center-link')?.remove();
+      el.querySelector('.center-link')?.remove();
       try {
         const a = await store.analyse(id, an.dataset.force === '1');
         if (sheetElement() === el) box.innerHTML = analysisHTML(a);
@@ -190,33 +285,19 @@ export function openChannel(app, id) {
 // Niches
 // ---------------------------------------------------------------------------
 
-export function openNiches() {
-  const render = () => {
-    const { niches, channels } = store.get();
-    return `${header('Niches', { cancel: 'Done', submit: '' })}
-      <p class="hint">Group competitors by topic, then filter the Outliers feed by niche.</p>
-      <div class="card list inset">${niches.map((n) => `<div class="row"><span class="grow"><span class="title">${esc(n.name)}</span><span class="sub">${channels.filter((c) => c.nicheId === n.id).length} channels</span></span>
-        <button type="button" class="link" data-rename="${esc(n.id)}">Rename</button><button type="button" class="link destructive" data-del="${esc(n.id)}">Delete</button></div>`).join('')}
-        <button type="button" class="row add-row" data-new><span class="ico add-ico" aria-hidden="true">+</span><span class="title">New niche</span></button></div>`;
-  };
-  const el = openSheet(render(), { label: 'Niches' });
-  const body = el.querySelector('.sheet-body');
-  el.addEventListener('click', async (e) => {
-    try {
-      if (e.target.closest('[data-new]')) {
-        const name = prompt('Name the niche')?.trim().slice(0, 40);
-        if (name) await store.saveNiche({ name });
-      }
-      const r = e.target.closest('[data-rename]');
-      if (r) {
-        const n = store.get().niches.find((x) => x.id === r.dataset.rename);
-        const name = prompt('Rename niche', n.name)?.trim().slice(0, 40);
-        if (name) await store.saveNiche({ id: n.id, name });
-      }
-      const d = e.target.closest('[data-del]');
-      if (d && await confirmDialog({ title: 'Delete this niche?', message: 'Its channels stay tracked, without a niche.', confirmLabel: 'Delete', destructive: true })) await store.deleteNiche(d.dataset.del);
-      if (e.target.closest('[data-new],[data-rename],[data-del]') && sheetElement() === el) body.innerHTML = render();
-    } catch (err) { toast(err.message); }
+export function openNiches(app) {
+  const { niches, channels } = store.get();
+  const el = openSheet(`${header('Niches', { cancel: 'Done', submit: '' })}
+    <p class="hint">A niche with search words finds outliers from any channel. You can also group tracked channels under it.</p>
+    <div class="card list inset">${niches.map((n) => `<button type="button" class="row" data-edit="${esc(n.id)}">
+        <span class="ico" style="--c:${n.keywords ? '#ff3b30' : '#8e8e93'}" aria-hidden="true">${n.keywords ? '🔭' : '🗂️'}</span>
+        <span class="grow"><span class="title">${esc(n.name)}</span><span class="sub">${n.keywords ? `“${esc(n.keywords)}” · ${scanLabel(n)}` : 'No search words'} · ${channels.filter((c) => c.nicheId === n.id).length} channels</span></span>
+        <span class="chev" aria-hidden="true">›</span></button>`).join('')}
+      <button type="button" class="row add-row" data-new><span class="ico add-ico" aria-hidden="true">+</span><span class="title">New niche</span></button></div>`, { label: 'Niches' });
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-new]')) openNicheEditor(app);
+    const r = e.target.closest('[data-edit]');
+    if (r) openNicheEditor(app, { id: r.dataset.edit });
   });
 }
 
@@ -307,27 +388,44 @@ export function openOnboarding(app) {
   const local = app.backend.mode === 'local';
   const el = openSheet(`<form id="ob-form" class="welcome" novalidate>
     <div class="welcome-art" aria-hidden="true">📈</div>
-    <h2 class="welcome-title">Set up Breakout</h2>
-    <p class="welcome-text">Name your niche and choose how big a breakout has to be. You can change both later.</p>
+    <h2 class="welcome-title">What’s your niche?</h2>
+    <p class="welcome-text">Breakout searches YouTube for it and shows the videos beating their own channel’s normal views.</p>
     <div class="card list inset">
-      <label class="row field"><span class="title">Your niche</span><input id="ob-niche" maxlength="40" placeholder="e.g. Home cooking" autocomplete="off"></label>
+      <label class="row field"><span class="title">Niche</span><input id="ob-niche" maxlength="40" placeholder="e.g. Home cooking" autocomplete="off"></label>
+      <label class="row field"><span class="title">Search for</span><input id="ob-keywords" maxlength="200" placeholder="meal prep, budget recipes" autocomplete="off"></label>
       <label class="row field"><span class="title">Outlier at</span><select id="ob-threshold">${THRESHOLDS.map((t) => `<option value="${t}" ${t === 3 ? 'selected' : ''}>${t}× typical views</option>`).join('')}</select></label>
       ${local ? '<label class="row field"><span class="title">YouTube key</span><input id="ob-yt" type="password" placeholder="Required" autocomplete="off" spellcheck="false"></label>' : ''}
     </div>
-    ${local ? '<p class="hint">Free from Google Cloud Console: enable “YouTube Data API v3”, then Credentials → Create API key. It stays in this browser.</p>' : '<p class="hint">3× is a good start: it catches clear winners without flooding you.</p>'}
+    <p class="hint">Search for: what you’d type into YouTube; separate a few with commas. If you leave it empty, the niche name is used.${local ? ' YouTube key: free from Google Cloud Console → enable “YouTube Data API v3” → Credentials → Create API key. It stays in this browser.' : ''}</p>
+    <div class="scan-status" id="ne-status" role="status" hidden><span class="spinner" aria-hidden="true"></span> Searching YouTube…</div>
     <p class="form-error" id="ob-error" role="alert" hidden></p>
-    <button type="submit" class="btn primary">Next: add a channel</button>
+    <button type="submit" class="btn primary">Find outliers</button>
+    <button type="button" class="link center-link" data-skip>Skip — I’ll track specific channels</button>
   </form>`, { label: 'Set up Breakout' });
+  const er = $('#ob-error', el);
+  const settingsPatch = () => ({ onboarded: true, threshold: Number($('#ob-threshold', el).value), ...(local ? { youtubeKey: $('#ob-yt', el).value.trim() } : {}) });
+  const needKey = () => { if (local && !$('#ob-yt', el).value.trim()) { er.textContent = 'Add a YouTube API key to search YouTube.'; er.hidden = false; return true; } return false; };
   $('#ob-form', el).addEventListener('submit', async (e) => {
     e.preventDefault();
-    const yt = $('#ob-yt', el)?.value.trim();
-    if (local && !yt) { const er = $('#ob-error', el); er.textContent = 'Add a YouTube API key to check channels.'; er.hidden = false; return; }
+    const name = $('#ob-niche', el).value.trim().slice(0, 40);
+    if (!name) { $('#ob-niche', el).focus(); return; }
+    if (needKey()) return;
+    const btn = $('button[type="submit"]', el);
+    btn.disabled = true; er.hidden = true;
     try {
-      await store.saveSettings({ onboarded: true, threshold: Number($('#ob-threshold', el).value), ...(local ? { youtubeKey: yt } : {}) });
-      const name = $('#ob-niche', el).value.trim();
-      const n = name ? await store.saveNiche({ name }) : null;
-      closeSheet(true);
-      openAddChannel(app, { nicheId: n?.id ?? null });
-    } catch (err) { toast(err.message); }
+      await store.saveSettings(settingsPatch());
+      const n = await store.saveNiche({ name, keywords: $('#ob-keywords', el).value.trim().slice(0, 200) || name });
+      const found = await runScan(app, el, n.id);
+      closeSheet();
+      app.showNiche(n.id);
+      toast(found ? `Found ${found} outlier${found === 1 ? '' : 's'} in ${name}` : `No outliers in ${name} right now. Breakout will keep looking.`);
+    } catch (err) {
+      btn.disabled = false; $('#ne-status', el).hidden = true;
+      er.textContent = err.message; er.hidden = false;
+    }
+  });
+  el.addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-skip]') || needKey()) return;
+    try { await store.saveSettings(settingsPatch()); closeSheet(true); openAddChannel(app); } catch (err) { toast(err.message); }
   });
 }

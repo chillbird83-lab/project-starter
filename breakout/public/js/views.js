@@ -13,41 +13,49 @@ const duration = (s) => {
 
 export const heat = (score) => (score >= 10 ? 'hot' : score >= 5 ? 'warm' : 'mild');
 
-export function videoCard(v, channel, now) {
+/** The niche a video belongs to: its tracked channel's niche, or the niche whose scan found it. */
+export const nicheOf = (v, byChannel) => byChannel.get(v.channelId)?.nicheId ?? v.nicheId ?? null;
+export const channelTitleOf = (v, byChannel) => byChannel.get(v.channelId)?.title ?? v.channelTitle ?? '';
+
+export function videoCard(v, channelTitle, now) {
   return `<button type="button" class="vcard" data-action="video" data-id="${esc(v.id)}">
     <span class="vthumb">${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
       <b class="badge ${heat(v.score)}">${scoreLabel(v.score)}</b>${v.isShort ? '<i class="tag">Short</i>' : `<i class="tag">${duration(v.durationS)}</i>`}${v.saved ? '<i class="star" aria-label="Saved">★</i>' : ''}</span>
     <span class="vmeta"><span class="vtitle">${esc(v.title)}</span>
-      <span class="sub">${esc(channel?.title ?? '')} · ${compact(v.views)} views · ${age(v.publishedAt, now)}</span></span>
+      <span class="sub">${esc(channelTitle)} · ${compact(v.views)} views · ${age(v.publishedAt, now)}</span></span>
   </button>`;
 }
 
-const lastChecked = (channels, now) => {
-  const times = channels.map((c) => c.checkedAt).filter(Boolean).sort();
+const lastChecked = (state, now) => {
+  const times = [...state.channels.map((c) => c.checkedAt), ...state.niches.map((n) => n.scannedAt)].filter(Boolean).sort();
   return times.length ? `checked ${age(times.at(-1), now)} ago` : 'not checked yet';
 };
+const scanning = (state) => state.niches.filter((n) => n.keywords);
 
 export function outlierList(ctx) {
-  const { videos, channels, settings } = ctx.state;
+  const { videos, channels, niches, settings } = ctx.state;
   const f = ctx.ui;
   const byId = new Map(channels.map((c) => [c.id, c]));
-  const inNiche = (v) => f.niche === 'all' || f.niche === 'saved' || byId.get(v.channelId)?.nicheId === f.niche;
-  const list = videos.filter((v) => byId.has(v.channelId) && inNiche(v)
+  const nicheIds = new Set(niches.map((n) => n.id));
+  const visible = (v) => byId.has(v.channelId) || (!v.channelId && nicheIds.has(v.nicheId));
+  const inNiche = (v) => f.niche === 'all' || f.niche === 'saved' || nicheOf(v, byId) === f.niche;
+  const list = videos.filter((v) => visible(v) && inNiche(v)
     && (f.niche === 'saved' ? v.saved : isOutlier(v, v.score, settings))
     && (!f.period || ctx.now - Date.parse(v.publishedAt) <= f.period * DAY)
     && (f.kind === 'all' || (f.kind === 'short') === !!v.isShort))
     .sort((a, b) => b.score - a.score);
   if (!list.length) {
-    if (!channels.length) {
-      return `<div class="empty"><div class="empty-emoji" aria-hidden="true">📈</div><h3>Track your first channel</h3>
-        <p>Add competitors in your niche. Breakout learns what their videos normally get and flags the ones that break out.</p>
-        <button type="button" class="btn primary" data-action="add">Add a channel</button></div>`;
+    if (!channels.length && !scanning(ctx.state).length) {
+      return `<div class="empty"><div class="empty-emoji" aria-hidden="true">📈</div><h3>Find the outliers in your niche</h3>
+        <p>Tell Breakout what your niche is about. It searches YouTube and shows the videos beating their own channel’s normal views — from any channel.</p>
+        <button type="button" class="btn primary" data-action="add-niche">Add a niche</button>
+        <button type="button" class="link center-link" data-action="add-channel">or track specific channels</button></div>`;
     }
     return `<div class="empty small-empty"><div class="empty-emoji" aria-hidden="true">${f.niche === 'saved' ? '☆' : '🔭'}</div>
       <h3>${f.niche === 'saved' ? 'Nothing saved yet' : 'No outliers here'}</h3>
       <p>${f.niche === 'saved' ? 'Tap ☆ on a video to keep it here.' : `Nothing beat ${scoreLabel(settings.threshold)} typical views in this view. Try a longer period or a lower threshold in Settings.`}</p></div>`;
   }
-  return `<div class="vgrid">${list.slice(0, f.limit).map((v) => videoCard(v, byId.get(v.channelId), ctx.now)).join('')}</div>
+  return `<div class="vgrid">${list.slice(0, f.limit).map((v) => videoCard(v, channelTitleOf(v, byId), ctx.now)).join('')}</div>
     ${list.length > f.limit ? '<button type="button" class="btn secondary" data-action="more">Show more</button>' : ''}`;
 }
 
@@ -55,9 +63,14 @@ export function outliersView(ctx) {
   const { niches, channels, settings } = ctx.state;
   const f = ctx.ui;
   const chips = [['all', 'All niches'], ...niches.map((n) => [n.id, n.name]), ['saved', '★ Saved']];
+  const sources = [
+    scanning(ctx.state).length ? `${scanning(ctx.state).length} niche${scanning(ctx.state).length === 1 ? '' : 's'}` : '',
+    channels.length ? `${channels.length} channel${channels.length === 1 ? '' : 's'}` : '',
+  ].filter(Boolean);
+  const anything = sources.length > 0;
   return `<div class="screen-head"><div><h1 class="large-title">Outliers</h1>
-      <p class="subtitle">${channels.length ? `${channels.length} channel${channels.length === 1 ? '' : 's'} · ${lastChecked(channels, ctx.now)}` : 'Videos beating their channel’s normal'}</p></div>
-    ${channels.length ? `<button type="button" class="icon-btn ${ctx.ui.refreshing ? 'spinning' : ''}" data-action="refresh" aria-label="Check channels now" ${ctx.ui.refreshing ? 'disabled' : ''}>
+      <p class="subtitle">${anything ? `${sources.join(' · ')} · ${lastChecked(ctx.state, ctx.now)}` : 'Videos beating their channel’s normal'}</p></div>
+    ${anything ? `<button type="button" class="icon-btn ${ctx.ui.refreshing ? 'spinning' : ''}" data-action="refresh" aria-label="Check channels now" ${ctx.ui.refreshing ? 'disabled' : ''}>
       <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>` : ''}</div>
     ${niches.length || channels.length ? `<div class="chips scroll" role="group" aria-label="Niche">${chips.map(([id, name]) => `<button type="button" class="chip ${f.niche === id ? 'on' : ''}" data-action="niche" data-value="${esc(id)}" aria-pressed="${f.niche === id}">${esc(name)}</button>`).join('')}</div>
     <div class="seg" role="group" aria-label="Published">${PERIODS.map(([d, l]) => `<button type="button" data-action="period" data-value="${d}" class="${f.period === d ? 'on' : ''}" aria-pressed="${f.period === d}">${l}</button>`).join('')}</div>
@@ -81,9 +94,9 @@ export function channelsView(ctx) {
       <p class="subtitle">${channels.length} of ${ctx.backend.config.maxChannels ?? 30} tracked</p></div>
     <button type="button" class="chip-btn" data-action="niches">Niches</button></div>
     ${channels.length ? '' : `<div class="empty"><div class="empty-emoji" aria-hidden="true">📺</div><h3>No channels yet</h3>
-      <p>Paste a channel link, an @handle or any of their video links.</p><button type="button" class="btn primary" data-action="add">Add a channel</button></div>`}
+      <p>Optional: niches already find outliers from any channel. Track a channel to follow a specific competitor closely.</p><button type="button" class="btn primary" data-action="add-channel">Track a channel</button></div>`}
     ${groups.map(([n, list]) => `<section class="group"><h3 class="group-title"><span>${esc(n ? n.name : 'No niche')}</span><span>${list.length || ''}</span></h3>
-      <div class="card list">${list.map(row).join('') || `<button type="button" class="row add-row" data-action="add" data-niche="${esc(n.id)}"><span class="ico add-ico" aria-hidden="true">+</span><span class="title">Add a channel</span></button>`}</div></section>`).join('')}
+      <div class="card list">${list.map(row).join('') || `<button type="button" class="row add-row" data-action="add-channel" data-niche="${esc(n.id)}"><span class="ico add-ico" aria-hidden="true">+</span><span class="title">Add a channel</span></button>`}</div></section>`).join('')}
     <p class="footnote">Channels are checked ${ctx.backend.mode === 'cloud' ? `about every ${ctx.backend.config.refreshHours ?? 4} hours` : 'when you open the app'}. Scores compare each video with the channel’s typical views at the same age.</p>`;
 }
 

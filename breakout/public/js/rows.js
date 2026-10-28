@@ -17,6 +17,13 @@ export const videoToRow = (v) => ({
   yt_video_id: v.ytVideoId, title: v.title, description: v.description || '', tags: v.tags || [], thumb: v.thumb || '',
   published_at: v.publishedAt, duration_s: v.durationS || 0, is_short: !!v.isShort, views: v.views || 0,
   likes: v.likes ?? null, comments: v.comments ?? null, score: v.score || 0, is_outlier: !!v.isOutlier,
+  yt_channel_id: v.ytChannelId || '',
+});
+
+/** A video found by a niche scan (not from a tracked channel). */
+export const discoveryToRow = (v) => ({
+  ...videoToRow(v), channel_title: v.channelTitle || '', channel_subs: v.channelSubs ?? null,
+  baseline: v.baseline || 0, baseline_kind: v.baselineKind || 'average', source: 'search',
 });
 
 export const rowToVideo = (r) => ({
@@ -24,7 +31,17 @@ export const rowToVideo = (r) => ({
   thumb: r.thumb, publishedAt: r.published_at, durationS: r.duration_s, isShort: r.is_short, views: Number(r.views) || 0,
   likes: r.likes == null ? null : Number(r.likes), comments: r.comments == null ? null : Number(r.comments),
   score: Number(r.score) || 0, isOutlier: r.is_outlier, alertedAt: r.alerted_at ?? null,
+  nicheId: r.niche_id ?? null, ytChannelId: r.yt_channel_id || '', channelTitle: r.channel_title || '',
+  channelSubs: r.channel_subs == null ? null : Number(r.channel_subs), baseline: Number(r.baseline) || 0,
+  baselineKind: r.baseline_kind || 'median', source: r.source || 'channel',
   analysis: r.analysis ?? null, analysedAt: r.analysed_at ?? null, saved: !!r.saved, updatedAt: r.updated_at,
+});
+
+export const rowToNiche = (r) => ({ id: r.id, name: r.name, keywords: r.keywords || '', scannedAt: r.scanned_at ?? null });
+
+/** A stand-in channel for a discovered video, so alerts and analysis can treat both kinds alike. */
+export const pseudoChannel = (v) => ({
+  title: v.channelTitle, subscribers: v.channelSubs, baselineLong: v.baseline, baselineShort: v.baseline, ytChannelId: v.ytChannelId,
 });
 
 export const settingsFromProfile = (p = {}) => ({

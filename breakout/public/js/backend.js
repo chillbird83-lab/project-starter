@@ -5,7 +5,8 @@
 //           Channels are checked when the app is open; no Telegram alerts.
 import { analyseVideo } from './analyse.js';
 import * as db from './db.js';
-import { rowToChannel, rowToVideo } from './rows.js';
+import { nicheQuery, scanNiche } from './discover.js';
+import { rowToChannel, rowToNiche, rowToVideo } from './rows.js';
 import { DEFAULT_SETTINGS } from './score.js';
 import { refreshChannel } from './tracker.js';
 import { ytClient } from './youtube.js';
@@ -104,7 +105,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
   const api = (path, body, method = 'POST') =>
     call(`api/${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json());
 
-  const VIDEO_COLS = 'id,channel_id,yt_video_id,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
+  const VIDEO_COLS = 'id,channel_id,niche_id,source,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
 
   return {
     mode: 'cloud',
@@ -120,14 +121,14 @@ export function cloudBackend(config, { onSignedOut } = {}) {
 
     async load() {
       const [niches, channels, videos, profiles, links] = await Promise.all([
-        rest('niches?select=id,name,created_at&order=created_at.asc'),
+        rest('niches?select=id,name,keywords,scanned_at,created_at&order=created_at.asc'),
         rest('channels?select=*&order=created_at.asc'),
         rest(`videos?select=${VIDEO_COLS}&order=published_at.desc&limit=5000`),
         rest(`profiles?select=*&user_id=eq.${this.user.id}`),
         rest('telegram_links?select=chat_id,linked_at'),
       ]);
       return {
-        niches: niches.map((n) => ({ id: n.id, name: n.name })),
+        niches: niches.map(rowToNiche),
         channels: channels.map(rowToChannel),
         videos: videos.map(rowToVideo),
         settings: profiles[0] ? profileToSettings(profiles[0]) : { ...DEFAULT_SETTINGS, onboarded: false },
@@ -140,12 +141,13 @@ export function cloudBackend(config, { onSignedOut } = {}) {
         body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts },
       });
     },
-    async saveNiche({ id, name }) {
+    async saveNiche({ id, name, keywords = '' }) {
       const [row] = id
-        ? await rest(`niches?id=eq.${id}`, { method: 'PATCH', body: { name }, prefer: 'return=representation' })
-        : await rest('niches', { method: 'POST', body: { user_id: this.user.id, name }, prefer: 'return=representation' });
-      return { id: row.id, name: row.name };
+        ? await rest(`niches?id=eq.${id}`, { method: 'PATCH', body: { name, keywords }, prefer: 'return=representation' })
+        : await rest('niches', { method: 'POST', body: { user_id: this.user.id, name, keywords }, prefer: 'return=representation' });
+      return rowToNiche(row);
     },
+    scanNiche: (nicheId) => api('niches/scan', { nicheId }),
     deleteNiche: (id) => rest(`niches?id=eq.${id}`, { method: 'DELETE' }),
     moveChannel: (id, nicheId) => rest(`channels?id=eq.${id}`, { method: 'PATCH', body: { niche_id: nicheId } }),
     deleteChannel: (id) => rest(`channels?id=eq.${id}`, { method: 'DELETE' }),
@@ -175,8 +177,8 @@ export function localBackend(config) {
 
   /** Saves a refresh result, keeping each video's analysis, saved flag and local id. */
   async function store(channelRow, out, { seed = false } = {}) {
-    const existing = (await db.getAll('videos')).filter((v) => v.channelId === channelRow.id);
-    const byYt = new Map(existing.map((v) => [v.ytVideoId, v]));
+    // Match across all videos, so one a niche scan found becomes part of the channel (keeping its analysis).
+    const byYt = new Map((await db.getAll('videos')).map((v) => [v.ytVideoId, v]));
     const now = new Date().toISOString();
     const channel = { ...channelRow, ...out.channel };
     const videos = out.videos.map((v) => {
@@ -201,10 +203,39 @@ export function localBackend(config) {
       return { niches, channels, videos, settings, telegram: { linked: false } };
     },
     async saveSettings(s) { settings = { ...s }; await db.put('kv', settings, 'settings'); },
-    async saveNiche({ id, name }) { const n = { id: id ?? uid(), name }; await db.put('niches', n); return n; },
+    async saveNiche({ id, name, keywords = '' }) {
+      const old = id ? await db.get('niches', id) : null;
+      const n = { id: id ?? uid(), name, keywords, scannedAt: old?.scannedAt ?? null };
+      await db.put('niches', n);
+      return n;
+    },
     async deleteNiche(id) {
       await db.del('niches', id);
       for (const c of (await db.getAll('channels')).filter((c) => c.nicheId === id)) await db.put('channels', { ...c, nicheId: null });
+      for (const v of (await db.getAll('videos')).filter((v) => v.nicheId === id && !v.channelId)) await db.del('videos', v.id);
+    },
+    /** Finds outliers from any channel for the niche's search words (about 122 of your quota units). */
+    async scanNiche(nicheId) {
+      const niche = await db.get('niches', nicheId);
+      if (!niche) throw new Error('Unknown niche.');
+      const query = nicheQuery({ keywords: niche.keywords });
+      if (!query) throw new Error('Add search words to this niche first.');
+      const [channels, existing] = await Promise.all([db.getAll('channels'), db.getAll('videos')]);
+      const tracked = new Set(channels.map((c) => c.ytChannelId));
+      const byYt = new Map(existing.map((v) => [v.ytVideoId, v]));
+      const now = new Date().toISOString();
+      const found = (await scanNiche(yt(), query, { settings })).filter((v) => !tracked.has(v.ytChannelId));
+      const videos = found.map((v) => {
+        const old = byYt.get(v.ytVideoId);
+        return {
+          ...v, id: old?.id ?? uid(), channelId: null, nicheId, analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
+          saved: old?.saved ?? false, alertedAt: old?.alertedAt ?? null, updatedAt: now,
+        };
+      });
+      await db.putMany('videos', videos);
+      const updated = { ...niche, scannedAt: now };
+      await db.put('niches', updated);
+      return { niche: updated, videos };
     },
     async moveChannel(id, nicheId) { const c = (await db.getAll('channels')).find((x) => x.id === id); if (c) await db.put('channels', { ...c, nicheId }); },
     async deleteChannel(id) {
@@ -245,9 +276,17 @@ export function localBackend(config) {
       if (!v) throw new Error('Unknown video.');
       if (v.analysis && !force) return { analysis: v.analysis, analysedAt: v.analysedAt };
       if (!settings.geminiKey) throw new Error('Add your Gemini API key in Settings to get the analysis.');
-      const channel = (await db.getAll('channels')).find((c) => c.id === v.channelId);
-      const others = (await db.getAll('videos')).filter((o) => o.channelId === v.channelId && o.id !== v.id)
-        .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt)).slice(0, 15);
+      let channel = (await db.getAll('channels')).find((c) => c.id === v.channelId);
+      let others;
+      if (channel) {
+        others = (await db.getAll('videos')).filter((o) => o.channelId === v.channelId && o.id !== v.id)
+          .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt)).slice(0, 15);
+      } else {
+        // Found by a niche scan: fetch that channel's recent uploads for the comparison (3 units).
+        const ctx = await refreshChannel(yt(), v.ytChannelId, { settings });
+        channel = ctx.channel;
+        others = ctx.videos.filter((o) => o.ytVideoId !== v.ytVideoId).slice(0, 15);
+      }
       const analysis = await analyseVideo({ yt: yt(), apiKey: settings.geminiKey, model: settings.geminiModel || undefined, video: v, channel, others });
       const analysedAt = new Date().toISOString();
       await db.put('videos', { ...v, analysis, analysedAt });

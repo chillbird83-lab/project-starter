@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { runScheduled } from '../worker/index.js';
+import worker, { NICHE_CRON, runNicheScan, runScheduled } from '../worker/index.js';
 import { webhookSecret } from '../worker/telegram.js';
 import { fakeSupabase } from './fake-supabase.js';
 import { CH, fakeYouTube } from './fake-youtube.js';
@@ -166,5 +166,80 @@ test('Telegram: linking, secret check and the "Why did it work?" button', async 
 
     await hook({ message: { text: '/stop', chat: { id: 555 } } });
     assert.equal(w.sb.db.profiles.length, 0); // no profile row yet → nothing to pause, but no crash
+  } finally { w.restore(); }
+});
+
+const NICHE = '33333333-3333-4333-8333-333333333333';
+
+test('niche scan: finds outliers from any channel, skips tracked channels, rate-limited', async () => {
+  const w = world({ niches: [{ id: NICHE, user_id: ALICE, name: 'Cooking', keywords: 'budget cooking, meal prep', scanned_at: null, created_at: '2026-01-01' }] });
+  try {
+    assert.equal((await call('/api/niches/scan', { token: 'bob.jwt', body: { nicheId: NICHE } })).status, 404);
+    const res = await call('/api/niches/scan', { body: { nicheId: NICHE } });
+    const out = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(out));
+    const q = w.yt.calls.find((u) => u.pathname.endsWith('/search')).searchParams.get('q');
+    assert.equal(q, 'budget cooking | meal prep');
+    assert.deepEqual(out.videos.map((v) => v.ytVideoId).sort(), ['breakout001', 'tinyhit0001']);
+    const tiny = w.sb.db.videos.find((v) => v.yt_video_id === 'tinyhit0001');
+    assert.equal(tiny.niche_id, NICHE);
+    assert.equal(tiny.channel_id, undefined);
+    assert.equal(tiny.channel_title, 'Tiny Kitchen');
+    assert.ok(tiny.alerted_at, 'first scan seeds alerts');
+    assert.ok(w.sb.db.niches[0].scanned_at);
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: NICHE } })).status, 429);
+
+    // Track Morning Maker → its videos are left to channel tracking on the next scan
+    await call('/api/channels', { body: { input: '@morningmaker' } });
+    w.sb.db.niches[0].scanned_at = '2000-01-01T00:00:00Z';
+    const again = await (await call('/api/niches/scan', { body: { nicheId: NICHE } })).json();
+    assert.deepEqual(again.videos.map((v) => v.ytVideoId), ['tinyhit0001']);
+  } finally { w.restore(); }
+});
+
+test('niche scan needs search words and respects the niche limit', async () => {
+  const w = world({ niches: [
+    { id: NICHE, user_id: ALICE, name: 'Just a group', keywords: '', created_at: '2026-01-01' },
+    { id: '44444444-4444-4444-8444-444444444444', user_id: ALICE, name: 'A', keywords: 'a', created_at: '2026-01-02' },
+    { id: '55555555-5555-4555-8555-555555555555', user_id: ALICE, name: 'B', keywords: 'b', created_at: '2026-01-03' },
+  ] });
+  try {
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: NICHE } })).status, 400);
+    const e = env({ MAX_NICHES: '1' });
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: '55555555-5555-4555-8555-555555555555' } }, e)).status, 403);
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: '44444444-4444-4444-8444-444444444444' } }, e)).status, 200);
+  } finally { w.restore(); }
+});
+
+test('hourly cron scans a due niche and alerts new finds; analysis works for discovered videos', async () => {
+  const w = world({
+    niches: [{ id: NICHE, user_id: ALICE, name: 'Cooking', keywords: 'budget cooking', scanned_at: '2026-10-27T00:00:00Z', created_at: '2026-01-01' }],
+    profiles: [{ user_id: ALICE, threshold: 3, min_views: 1000, include_shorts: true, alerts: true }],
+    telegram_links: [{ user_id: ALICE, chat_id: 777 }],
+  });
+  try {
+    const now = Date.parse('2026-10-28T12:07:00Z');
+    const tasks = [];
+    await worker.scheduled({ cron: NICHE_CRON, scheduledTime: now }, env(), { waitUntil: (p) => tasks.push(p) });
+    await Promise.all(tasks);
+    const alerts = w.telegram.filter((t) => t.method === 'sendMessage');
+    assert.equal(alerts.length, 2);
+    assert.ok(alerts.some((a) => /Tiny Kitchen · in “Cooking”/.test(a.body.text)));
+    assert.deepEqual(await runNicheScan(env(), now + 36e5), { scanned: 0 }); // not due again for 12 hours
+
+    const tiny = w.sb.db.videos.find((v) => v.yt_video_id === 'tinyhit0001');
+    const a = await (await call('/api/analyse', { body: { videoId: tiny.id } })).json();
+    assert.equal(a.analysis.titleFormula, 'I tried [habit] for [N] days');
+    assert.ok(w.yt.calls.some((u) => u.searchParams.get('playlistId') === `UU${'9876543210987654321098'}`), 'fetched the channel for comparison');
+  } finally { w.restore(); }
+});
+
+test('the 15-minute cron still runs channel checks', async () => {
+  const w = world({ channels: [{ id: 'c1', user_id: ALICE, yt_channel_id: CH, title: 'Morning Maker', checked_at: null }] });
+  try {
+    const tasks = [];
+    await worker.scheduled({ cron: '*/15 * * * *', scheduledTime: Date.parse('2026-10-28T12:00:00Z') }, env(), { waitUntil: (p) => tasks.push(p) });
+    await Promise.all(tasks);
+    assert.ok(w.sb.db.channels[0].checked_at);
   } finally { w.restore(); }
 });
