@@ -1,9 +1,10 @@
 # project-starter
 
-Two free, installable phone apps (PWAs) — no accounts, no server, no dependencies:
+Free, installable phone apps (PWAs) with no dependencies:
 
+- **[Shoebox](shoebox/)** (`shoebox/`) — receipt scanner for UK sole traders: snap a receipt, AI reads the amount, VAT and category, and it exports your Making Tax Digital quarterly totals. Runs on Gemini Flash, Supabase, Cloudflare R2 + Workers and Resend (all free tiers), or on the phone alone. Setup guide: [shoebox/README.md](shoebox/README.md).
 - **[Lectern](#lectern)** — record university lectures and keep them organised by course (moved to its own repository).
-- **[Budgie](#budgie)** (repo root) — a weekly and long-term budget tracker.
+- **[Budgie](#budgie)** (repo root) — a weekly and long-term budget tracker. No accounts, no server.
 
 ## Lectern
 
@@ -25,7 +26,7 @@ A weekly and long-term budget tracker with an Apple-style design. It is an insta
 
 ```bash
 npm start        # http://localhost:8080
-npm test         # unit tests for the budget maths (Node's built-in test runner)
+npm test         # unit tests for Budgie and Shoebox (Node's built-in test runner)
 ```
 
 ### Use it on your phone

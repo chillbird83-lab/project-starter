@@ -15,3 +15,7 @@ build/
 # Environment files
 .env
 .env.*
+
+# Cloudflare Wrangler
+.wrangler/
+.dev.vars

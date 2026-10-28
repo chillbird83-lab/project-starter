@@ -1,0 +1,29 @@
+# Cloudflare Worker that serves the app from ./public and runs the API in ./worker.
+# Deploy:   npx wrangler deploy
+# Secrets:  npx wrangler secret put GEMINI_API_KEY   (and SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY)
+name = "shoebox"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[r2_buckets]]
+binding = "RECEIPTS"
+bucket_name = "shoebox-receipts"
+
+# Deadline reminders, every day at 08:17 UTC.
+[triggers]
+crons = ["17 8 * * *"]
+
+[vars]
+# Supabase → Project Settings → API. The anon key is public by design; row-level security protects the data.
+SUPABASE_URL = ""
+SUPABASE_ANON_KEY = ""
+# Any Gemini model that reads images. "gemini-flash-latest" follows Google's newest Flash model.
+GEMINI_MODEL = "gemini-flash-latest"
+# A sender on a domain you verified in Resend, e.g. "Shoebox <hello@yourdomain.co.uk>".
+EMAIL_FROM = ""
+# Where the app lives, used for the link in reminder emails.
+APP_URL = ""
