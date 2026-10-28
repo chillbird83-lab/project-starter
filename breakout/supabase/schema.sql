@@ -85,6 +85,8 @@ alter table public.videos add column if not exists baseline bigint not null defa
 alter table public.videos add column if not exists baseline_kind text not null default 'median';
 alter table public.videos add column if not exists lang text not null default '';
 alter table public.profiles add column if not exists language text not null default 'any';
+alter table public.profiles add column if not exists hide_mixed boolean not null default true;
+alter table public.profiles add column if not exists hide_languages text[] not null default '{}';
 
 create table if not exists public.profiles (
   user_id         uuid primary key default auth.uid() references auth.users (id) on delete cascade,
@@ -94,6 +96,8 @@ create table if not exists public.profiles (
   include_shorts  boolean not null default true,
   alerts          boolean not null default true,
   language        text not null default 'any',  -- 'any' or a 2-letter code; favours and filters that language
+  hide_mixed      boolean not null default true, -- hide titles mixing in another alphabet
+  hide_languages  text[] not null default '{}',  -- never show these languages
   last_refresh_at timestamptz,
   updated_at      timestamptz not null default now()
 );

@@ -31,15 +31,15 @@ test('detects the language of titles and descriptions', () => {
   assert.equal(detectLanguage('WW2 #shorts'), null); // can't tell
 });
 
-test('YouTube’s own language field wins; the feed hides only clear mismatches', () => {
+test('YouTube’s language field is used when the text can’t tell; the feed hides only clear mismatches', () => {
   const v = mapVideo({ id: 'x', snippet: { title: 'Stalingrad', defaultAudioLanguage: 'es-419' }, statistics: {}, contentDetails: {} });
   assert.equal(v.lang, 'es-419');
   assert.equal(videoLanguage(v), 'es');
-  assert.equal(matchesLanguage(v, 'en'), false);
-  assert.equal(matchesLanguage(v, 'es'), true);
-  assert.equal(matchesLanguage(v, 'any'), true);
-  assert.equal(matchesLanguage({ title: 'WW2 #shorts' }, 'en'), true); // unknown stays visible
-  assert.equal(matchesLanguage({ title: 'Как выиграли войну' }, 'en'), false);
+  assert.equal(matchesLanguage(v, { language: 'en' }), false);
+  assert.equal(matchesLanguage(v, { language: 'es' }), true);
+  assert.equal(matchesLanguage(v, { language: 'any' }), true);
+  assert.equal(matchesLanguage({ title: 'WW2 #shorts' }, { language: 'en' }), true); // unknown stays visible
+  assert.equal(matchesLanguage({ title: 'Как выиграли войну' }, { language: 'en' }), false);
 });
 
 test('niche searches favour the chosen language', async () => {
@@ -49,4 +49,25 @@ test('niche searches favour the chosen language', async () => {
   const second = fakeYouTube();
   await scanNiche(ytClient('KEY', second.fetchImpl), 'ww2', { now: NOW, settings: { threshold: 3, minViews: 1000, includeShorts: true, language: 'any' } });
   assert.equal(second.calls.find((u) => u.pathname.endsWith('/search')).searchParams.get('relevanceLanguage'), null);
+});
+
+test('the title wins over a default language setting, mixed titles and hidden languages are filtered', () => {
+  const hindiTagged = { title: 'दुनिया की सबसे सुंदर महिला को है Rajveer Sir| Rajashthan History', lang: 'en' };
+  assert.equal(videoLanguage(hindiTagged), 'hi');
+  assert.equal(matchesLanguage(hindiTagged, { language: 'en' }), false);
+  const mixed = { title: 'History of Russia – 1100 सालों की कहानी, सिर्फ 23 मिनट में', lang: 'en' };
+  assert.equal(matchesLanguage(mixed, { language: 'en' }), false);
+  const oneWord = { title: 'The history of Russia in 20 minutes — रूस', lang: 'en' };
+  assert.equal(matchesLanguage(oneWord, { language: 'en', hideMixed: true }), false, 'even one word in another alphabet makes it mixed');
+  assert.equal(matchesLanguage({ title: 'History of Russia — Ω' }, { language: 'en', hideMixed: true }), true, 'a stray symbol is not a language');
+  const mixedMore = { title: 'The history of Russia in 20 minutes — रूस का इतिहास', lang: 'en' };
+  assert.equal(matchesLanguage(mixedMore, { language: 'en', hideMixed: true }), false);
+  assert.equal(matchesLanguage(mixedMore, { language: 'en', hideMixed: false }), true);
+  assert.equal(matchesLanguage({ title: 'The Most Fun Watch Ever Made #facts #history' }, { language: 'en' }), true);
+  // Hidden languages apply even with "Any language", including a phrase inside an English title
+  assert.equal(matchesLanguage(mixedMore, { language: 'any', hideLanguages: ['hi'] }), false);
+  assert.equal(matchesLanguage({ title: 'La batalla de Stalingrado: por qué fue el punto de inflexión' }, { language: 'any', hideLanguages: ['es'] }), false);
+  assert.equal(matchesLanguage({ title: 'How the war was won and why it matters' }, { language: 'any', hideLanguages: ['hi', 'es'] }), true);
+  // Russian with English words is fine for Russian
+  assert.equal(matchesLanguage({ title: 'Сталинградская битва: история WW2 documentary' }, { language: 'ru' }), true);
 });

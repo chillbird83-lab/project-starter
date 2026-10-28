@@ -4,6 +4,7 @@ import { age, compact, scoreLabel } from './rows.js';
 import { engagement, isOutlier } from './score.js';
 import * as store from './store.js';
 import { $, esc, haptic } from './util.js';
+import { LANGUAGES, languageName, videoLanguage } from './lang.js';
 import { duration, heat, languagePicker } from './views.js';
 import { channelURL, videoURL } from './youtube.js';
 
@@ -164,6 +165,14 @@ function analysisHTML(a) {
   </div>`;
 }
 
+/** "Language: Hindi · Hide Hindi videos" when a video is in a language you might not want. */
+function langRow(v) {
+  const l = videoLanguage(v);
+  const { language, hideLanguages } = store.get().settings;
+  if (!l || l === language || hideLanguages.includes(l)) return l ? `<p class="muted small lang-row">Language: ${esc(languageName(l))}</p>` : '';
+  return `<div class="lang-row"><span class="muted small">Language: ${esc(languageName(l))}</span><button type="button" class="chip-btn mini danger" data-hide-lang="${l}">Hide ${esc(languageName(l))} videos</button></div>`;
+}
+
 const EMBED = (id) => `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&playsinline=1&rel=0&modestbranding=1`;
 
 export function openVideo(app, id) {
@@ -195,6 +204,7 @@ export function openVideo(app, id) {
       <a class="btn secondary" href="${esc(videoURL(v.ytVideoId))}" target="_blank" rel="noopener">Open in YouTube</a>
       <button type="button" class="btn secondary" data-save>${v.saved ? '★ Saved' : '☆ Save'}</button>
     </div>
+    ${langRow(v)}
     ${!tracked && v.ytChannelId ? `<button type="button" class="btn secondary" data-track>📺 Track ${esc(channelTitle || 'this channel')}</button>` : ''}
     <div id="v-analysis">${v.analysis ? analysisHTML(v.analysis) : canAnalyse ? '<button type="button" class="btn primary ai-btn" data-analyse>🧠 Why did it work?</button>' : '<p class="hint">AI analysis isn’t set up on this server yet.</p>'}</div>
     ${v.analysis ? '<button type="button" class="link small center-link" data-analyse data-force="1">Analyse again</button>' : ''}`, { label: v.title, focus: false });
@@ -206,6 +216,16 @@ export function openVideo(app, id) {
     }
     const cp = ev.target.closest('[data-copy]');
     if (cp) { copy(cp.dataset.copy); return; }
+    const hl = ev.target.closest('[data-hide-lang]');
+    if (hl) {
+      const l = hl.dataset.hideLang;
+      try {
+        await store.saveSettings({ hideLanguages: [...store.get().settings.hideLanguages, l] });
+        closeSheet();
+        toast(`${languageName(l)} videos hidden. Undo in Settings.`);
+      } catch (err) { toast(err.message); }
+      return;
+    }
     if (ev.target.closest('[data-save]')) {
       const cur = store.get().videos.find((x) => x.id === id);
       const b = ev.target.closest('[data-save]');
@@ -325,6 +345,10 @@ export function openNiches(app) {
 // ---------------------------------------------------------------------------
 
 const THRESHOLDS = [2, 3, 5, 10];
+
+const hiddenChips = (list) => (list.length
+  ? list.map((c) => `<button type="button" class="chip-btn mini" data-unhide="${c}" aria-label="Show ${esc(languageName(c))} again">${esc(languageName(c))} ✕</button>`).join(' ')
+  : '<span class="sub">none</span>');
 const MIN_VIEWS = [0, 1000, 10000, 100000];
 
 export function openSettings(app) {
@@ -347,8 +371,11 @@ export function openSettings(app) {
       <label class="row field"><span class="title">And at least</span><select id="set-min">${[...new Set([...MIN_VIEWS, s.minViews])].sort((x, y) => x - y).map((m) => `<option value="${m}" ${m === s.minViews ? 'selected' : ''}>${m ? `${compact(m)} views` : 'any views'}</option>`).join('')}</select></label>
       ${switchRow('set-shorts', 'Include Shorts', 'Shorts are compared with the channel’s other Shorts', s.includeShorts)}
       <div class="row field"><span class="title">Language</span><span class="grow"></span>${languagePicker(s.language, 'set-language')}</div>
+      ${switchRow('set-mixed', 'Hide mixed-language videos', 'Titles that mix in another alphabet, e.g. Hindi words in an English title', s.hideMixed)}
+      <div class="row field hide-langs"><span class="title">Never show</span><span class="grow" id="hidden-langs">${hiddenChips(s.hideLanguages)}</span></div>
+      <label class="row field"><span class="title">Hide a language</span><select id="set-hide-lang"><option value="">Choose…</option>${LANGUAGES.filter(([c]) => c !== 'any').map(([c, n]) => `<option value="${c}">${esc(n)}</option>`).join('')}</select></label>
     </div>
-    <p class="hint">Niche searches favour this language, and videos clearly in another language are hidden.</p>
+    <p class="hint">Niche searches favour your language. Videos clearly in another language are hidden; ones the app can’t place stay visible.</p>
 
     ${cloud ? `<h3 class="group-label">Alerts</h3>
     <div class="card list inset">
@@ -373,6 +400,20 @@ export function openSettings(app) {
   on('#set-threshold', 'change', (e) => save({ threshold: Number(e.target.value) }));
   on('#set-min', 'change', (e) => save({ minViews: Number(e.target.value) }));
   on('#set-shorts', 'change', (e) => save({ includeShorts: e.target.checked }));
+  on('#set-mixed', 'change', (e) => save({ hideMixed: e.target.checked }));
+  const showHidden = () => { $('#hidden-langs', el).innerHTML = hiddenChips(store.get().settings.hideLanguages); };
+  on('#set-hide-lang', 'change', async (e) => {
+    if (!e.target.value) return;
+    await save({ hideLanguages: [...store.get().settings.hideLanguages, e.target.value] });
+    e.target.value = '';
+    showHidden();
+  });
+  el.addEventListener('click', async (e) => {
+    const u = e.target.closest('[data-unhide]');
+    if (!u) return;
+    await save({ hideLanguages: store.get().settings.hideLanguages.filter((c) => c !== u.dataset.unhide) });
+    showHidden();
+  });
   on('#set-alerts', 'change', (e) => save({ alerts: e.target.checked }));
   on('#set-yt', 'change', (e) => save({ youtubeKey: e.target.value.trim() }));
   on('#set-gem', 'change', (e) => save({ geminiKey: e.target.value.trim() }));

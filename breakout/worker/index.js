@@ -16,6 +16,7 @@ import { DEFAULT_MODEL } from '../public/js/gemini.js';
 import {
   channelToRow, discoveryToRow, pseudoChannel, rowToChannel, rowToNiche, rowToVideo, settingsFromProfile, videoToRow,
 } from '../public/js/rows.js';
+import { matchesLanguage } from '../public/js/lang.js';
 import { shouldAlert } from '../public/js/score.js';
 import { refreshChannel } from '../public/js/tracker.js';
 import { YouTubeError, ytClient } from '../public/js/youtube.js';
@@ -117,7 +118,7 @@ export async function processChannel(env, row, { settings, chatId = null, seed =
 async function sendAlerts(env, videos, { chatId, settings, now, channelFor, label }) {
   if (!chatId || !settings.alerts || !telegramReady(env)) return 0;
   const nowIso = new Date(now).toISOString();
-  const fresh = videos.filter((v) => shouldAlert(v, now)).sort((a, b) => b.score - a.score).slice(0, MAX_ALERTS_PER_CHANNEL);
+  const fresh = videos.filter((v) => shouldAlert(v, now) && matchesLanguage(v, settings)).sort((a, b) => b.score - a.score).slice(0, MAX_ALERTS_PER_CHANNEL);
   const sent = [];
   for (const v of fresh) if ((await tg(env, 'sendMessage', { chat_id: chatId, ...alertMessage(v, channelFor(v), now, label) })).ok) sent.push(v.id);
   if (sent.length) {

@@ -77,14 +77,53 @@ export function detectLanguage(text) {
   return n1 >= 1.5 && n1 >= n2 * 1.5 ? top : null;
 }
 
-/** A video's language: YouTube's own field first, then a guess from its text. */
-export function videoLanguage(v) {
-  return normalizeLang(v.lang) ?? detectLanguage(`${v.title ?? ''}\n${v.description ?? ''}`);
+/** Which scripts (by the codes in SCRIPTS, plus "latin") each language is written in. */
+const SCRIPT_OF = { ja: ['ja', 'zh'], zh: ['zh'], ko: ['ko'], th: ['th'], hi: ['hi'], bn: ['bn'], he: ['he'], ar: ['ar'], el: ['el'], ru: ['ru'], uk: ['ru'] };
+const scriptsFor = (lang) => SCRIPT_OF[lang] ?? ['latin'];
+
+/** How many letters of each script a text has: { latin: 12, hi: 20, … } */
+export function scriptCounts(text) {
+  const s = String(text ?? '');
+  const out = { latin: (s.match(/[a-zà-ÿăâîșțşğışçąćęłńóśźż]/gi) || []).length };
+  for (const [re, code] of SCRIPTS) out[code] = (s.match(new RegExp(re.source, 'g')) || []).length;
+  return out;
 }
 
-/** Feed filter: hide videos known to be in another language; keep ones we can't tell. */
-export function matchesLanguage(v, lang) {
-  if (!lang || lang === 'any') return true;
-  const l = videoLanguage(v);
-  return !l || l === lang;
+/**
+ * Scripts in a title that don't belong to `lang` — e.g. Devanagari in a title shown for English.
+ * Latin is allowed alongside non-Latin languages, where English words and brand names are common.
+ */
+export function foreignScripts(text, lang) {
+  const allowed = new Set([...scriptsFor(lang), ...(SCRIPT_OF[lang] ? ['latin'] : [])]);
+  return Object.entries(scriptCounts(text)).filter(([code, n]) => n >= 3 && !allowed.has(code)).map(([code]) => code);
+}
+
+/**
+ * A video's language. Its title and description win: many creators leave YouTube's language setting
+ * on a default (often English) that doesn't match what they actually speak. The setting is used when
+ * the text can't tell.
+ */
+export function videoLanguage(v) {
+  return detectLanguage(`${v.title ?? ''}\n${v.description ?? ''}`) ?? normalizeLang(v.lang);
+}
+
+/**
+ * Feed and alert filter.
+ * - hideLanguages: never show these, including titles that mix in their script (a Hindi phrase in an English title)
+ * - language: show only this one ("any" = all); videos we can't place stay visible
+ * - hideMixed: with a language chosen, also hide titles that mix in another script
+ */
+export function matchesLanguage(v, { language = 'any', hideMixed = true, hideLanguages = [] } = {}) {
+  const lang = videoLanguage(v);
+  if (hideLanguages.length) {
+    if (lang && hideLanguages.includes(lang)) return false;
+    const counts = scriptCounts(v.title);
+    for (const h of hideLanguages) {
+      if (h === 'zh' || !SCRIPT_OF[h]) continue; // kanji is shared with Japanese; Latin is shared by many
+      if (SCRIPT_OF[h].some((c) => counts[c] >= 3)) return false;
+    }
+  }
+  if (!language || language === 'any') return true;
+  if (hideMixed && foreignScripts(v.title, language).length) return false;
+  return !lang || lang === language;
 }

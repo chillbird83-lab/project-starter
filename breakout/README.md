@@ -23,7 +23,11 @@ It is an installable phone app (PWA) that runs on free tiers:
   - Each niche is searched again every 12 hours, or when you tap refresh (at most once an hour).
 - **Tracked channels:** follow specific competitors closely. They're checked every 4 hours, at 3 units each. From any outlier, tap **Track this channel**.
 
-**Language:** pick one with 🌐 on the Outliers screen or in Settings (it starts as your browser's language). Niche searches ask YouTube for that language first (`relevanceLanguage`). The feed hides videos that are clearly in another language: it uses the creator's own language setting when there is one, otherwise it reads the writing system (Cyrillic, Arabic, Japanese…) or common words (English, Spanish, German…) in the title and description. Videos it can't place stay visible. Changing the language searches your niches again.
+**Language:** pick one with 🌐 on the Outliers screen or in Settings (it starts as your browser's language). Niche searches ask YouTube for that language first (`relevanceLanguage`). The feed hides videos that are clearly in another language: it uses the creator's own language setting when there is one, otherwise it reads the writing system (Cyrillic, Arabic, Japanese…) or common words (English, Spanish, German…) in the title and description. Videos it can't place stay visible. The title wins over YouTube's language setting, which many creators leave on a default. Changing the language searches your niches again.
+
+- **Hide mixed-language videos** (on by default): with a language chosen, titles that mix in another alphabet are left out, e.g. Hindi words in an English title.
+- **Never show a language**: tap **Hide Hindi videos** (or any language) on a video, or manage the list in Settings. It applies even with "Any language" and to titles that only partly use that language.
+- Telegram alerts follow the same rules.
 
 Tap a video to **play it inside the app** (YouTube's embedded player). A few videos have embedding turned off by their owner; use **Open in YouTube** for those.
 

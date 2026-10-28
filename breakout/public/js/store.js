@@ -35,6 +35,8 @@ export function sanitizeSettings(s = {}) {
     includeShorts: s.includeShorts !== false,
     alerts: s.alerts !== false,
     language: LANGUAGES.some(([c]) => c === s.language) ? s.language : defaultLanguage(),
+    hideMixed: s.hideMixed !== false,
+    hideLanguages: [...new Set((Array.isArray(s.hideLanguages) ? s.hideLanguages : []).filter((c) => c !== 'any' && LANGUAGES.some(([x]) => x === c)))],
     ...(backend?.mode === 'local' ? {
       youtubeKey: String(s.youtubeKey ?? '').trim(), geminiKey: String(s.geminiKey ?? '').trim(), geminiModel: String(s.geminiModel ?? '').trim(),
     } : {}),

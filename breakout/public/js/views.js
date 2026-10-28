@@ -45,7 +45,7 @@ export function outlierList(ctx) {
     && (f.niche === 'saved' ? v.saved : isOutlier(v, v.score, settings))
     && (!f.period || ctx.now - Date.parse(v.publishedAt) <= f.period * DAY)
     && (f.kind === 'all' || (f.kind === 'short') === !!v.isShort)
-    && matchesLanguage(v, settings.language))
+    && matchesLanguage(v, settings))
     .sort((a, b) => b.score - a.score);
   if (!list.length) {
     if (!channels.length && !scanning(ctx.state).length) {

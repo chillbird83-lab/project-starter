@@ -267,3 +267,18 @@ test('the Worker searches niches in the language saved in the profile', async ()
     assert.equal(w.yt.calls.find((u) => u.pathname.endsWith('/search')).searchParams.get('relevanceLanguage'), 'es');
   } finally { w.restore(); }
 });
+
+test('alerts skip videos in other languages', async () => {
+  const w = world({
+    niches: [{ id: NICHE, user_id: ALICE, name: 'cooking', keywords: 'cooking', scanned_at: '2026-10-27T00:00:00Z', created_at: '2026-01-01' }],
+    profiles: [{ user_id: ALICE, threshold: 3, min_views: 1000, include_shorts: true, alerts: true, language: 'es', hide_mixed: true, hide_languages: [] }],
+    telegram_links: [{ user_id: ALICE, chat_id: 777 }],
+  });
+  try {
+    await runNicheScan(env(), Date.parse('2026-10-28T12:07:00Z'));
+    const alerts = w.telegram.filter((t) => t.method === 'sendMessage').map((t) => t.body.text);
+    // "I tried the 5am routine for 30 days" is English → no alert; the short title it can't place still alerts
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /Feed 4 people/);
+  } finally { w.restore(); }
+});

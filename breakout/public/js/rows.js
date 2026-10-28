@@ -47,6 +47,7 @@ export const pseudoChannel = (v) => ({
 export const settingsFromProfile = (p = {}) => ({
   threshold: Number(p.threshold) || 3, minViews: Number(p.min_views ?? 1000),
   includeShorts: p.include_shorts !== false, alerts: p.alerts !== false, language: p.language || 'any',
+  hideMixed: p.hide_mixed !== false, hideLanguages: Array.isArray(p.hide_languages) ? p.hide_languages : [],
 });
 
 /** 950 → "950", 12750 → "12.8K", 1234567 → "1.2M" */

@@ -42,6 +42,7 @@ export async function loadConfig() {
 const profileToSettings = (p) => ({
   ...DEFAULT_SETTINGS, onboarded: true, threshold: Number(p.threshold) || 3, minViews: Number(p.min_views ?? 1000),
   includeShorts: p.include_shorts !== false, alerts: p.alerts !== false, language: p.language || null,
+  hideMixed: p.hide_mixed !== false, hideLanguages: p.hide_languages || [],
 });
 
 // ---------------------------------------------------------------------------
@@ -138,7 +139,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
     async saveSettings(s) {
       await rest('profiles', {
         method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
-        body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts, language: s.language },
+        body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts, language: s.language, hide_mixed: s.hideMixed, hide_languages: s.hideLanguages },
       });
     },
     async saveNiche({ id, name, keywords = '' }) {
