@@ -1,10 +1,12 @@
 // Renders the PNG app icons from the SVG sources. Needs Playwright + Chromium (dev only):
-//   node scripts/make-icons.mjs
+//   node scripts/make-icons.mjs           (Budgie)
+//   node scripts/make-icons.mjs lectern   (Lectern)
 import { chromium } from 'playwright';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-const dir = fileURLToPath(new URL('../icons/', import.meta.url));
+const app = process.argv[2] ? `${process.argv[2]}/` : '';
+const dir = fileURLToPath(new URL(`../${app}icons/`, import.meta.url));
 const jobs = [
   ['icon.svg', 'icon-192.png', 192], ['icon.svg', 'icon-512.png', 512], ['icon-maskable.svg', 'apple-touch-icon.png', 180],
   ['icon-maskable.svg', 'icon-maskable-512.png', 512],
