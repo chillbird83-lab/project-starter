@@ -222,7 +222,24 @@ export function openVideo(app, id) {
       } catch (err) { b.disabled = false; b.textContent = `📺 Track ${channelTitle}`; toast(err.message); }
       return;
     }
-    const an = ev.target.closest('[data-analyse]');
+    if (ev.target.closest('[data-save-key]')) {
+      const key = $('#v-gem-key', el).value.trim();
+      if (!key) { $('#v-gem-key', el).focus(); return; }
+      try { await store.saveSettings({ geminiKey: key }); } catch (err) { toast(err.message); return; }
+    }
+    const an = ev.target.closest('[data-analyse], [data-save-key]');
+    if (an && app.backend.mode === 'local' && !store.get().settings.geminiKey) {
+      // This-device mode without a Gemini key: ask for it right here instead of sending people to Settings.
+      $('#v-analysis', el).innerHTML = `<div class="card key-card">
+        <p class="title">🧠 One more free key for this part</p>
+        <p class="sub wrap">“Why did it work?” uses Google’s Gemini AI. Everything else only needs your YouTube key.</p>
+        <ol class="steps"><li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google</li><li>Tap <b>Create API key</b> and copy it</li><li>Paste it here</li></ol>
+        <input id="v-gem-key" class="key-input" type="password" placeholder="Paste your Gemini key" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn primary" data-save-key>Save and analyse</button>
+        <p class="hint">It stays on this device. You can change it later in Settings.</p></div>`;
+      $('#v-gem-key', el).focus();
+      return;
+    }
     if (an) {
       const box = $('#v-analysis', el);
       box.innerHTML = '<div class="scan-status"><span class="spinner" aria-hidden="true"></span> Comparing it with the channel’s other videos…</div>';

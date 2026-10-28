@@ -472,6 +472,12 @@ a.btn { text-decoration: none; }
 .card.pad { font-size: 15px; line-height: 1.45; }
 .sub.wrap { white-space: normal; }
 .row.idea .title { font-weight: 600; }
+.key-card { display: grid; gap: 8px; }
+.key-card .steps { margin: 4px 0; padding-left: 20px; font-size: 15px; line-height: 1.5; }
+.key-card a { color: var(--blue); }
+.key-input { height: 48px; border: 0; border-radius: 12px; background: var(--fill); padding: 0 14px; font-size: 16px; outline: none; width: 100%; }
+.key-input:focus-visible { outline: 3px solid color-mix(in srgb, var(--blue) 45%, transparent); }
+.key-card .hint { margin: 0; }
 
 /* ---------- alert & toast ---------- */
 
