@@ -14,7 +14,8 @@ const duration = (s) => {
 export const heat = (score) => (score >= 10 ? 'hot' : score >= 5 ? 'warm' : 'mild');
 
 /** The niche a video belongs to: its tracked channel's niche, or the niche whose scan found it. */
-export const nicheOf = (v, byChannel) => byChannel.get(v.channelId)?.nicheId ?? v.nicheId ?? null;
+/** Whether a video belongs to a niche: through its tracked channel, or because the niche's search found it. */
+export const inNicheOf = (v, byChannel, nicheId) => byChannel.get(v.channelId)?.nicheId === nicheId || !!v.nicheIds?.includes(nicheId);
 export const channelTitleOf = (v, byChannel) => byChannel.get(v.channelId)?.title ?? v.channelTitle ?? '';
 
 export function videoCard(v, channelTitle, now) {
@@ -30,15 +31,15 @@ const lastChecked = (state, now) => {
   const times = [...state.channels.map((c) => c.checkedAt), ...state.niches.map((n) => n.scannedAt)].filter(Boolean).sort();
   return times.length ? `checked ${age(times.at(-1), now)} ago` : 'not checked yet';
 };
-const scanning = (state) => state.niches.filter((n) => n.keywords);
+const scanning = (state) => state.niches;
 
 export function outlierList(ctx) {
   const { videos, channels, niches, settings } = ctx.state;
   const f = ctx.ui;
   const byId = new Map(channels.map((c) => [c.id, c]));
   const nicheIds = new Set(niches.map((n) => n.id));
-  const visible = (v) => byId.has(v.channelId) || (!v.channelId && nicheIds.has(v.nicheId));
-  const inNiche = (v) => f.niche === 'all' || f.niche === 'saved' || nicheOf(v, byId) === f.niche;
+  const visible = (v) => byId.has(v.channelId) || (!v.channelId && !!v.nicheIds?.some((id) => nicheIds.has(id)));
+  const inNiche = (v) => f.niche === 'all' || f.niche === 'saved' || inNicheOf(v, byId, f.niche);
   const list = videos.filter((v) => visible(v) && inNiche(v)
     && (f.niche === 'saved' ? v.saved : isOutlier(v, v.score, settings))
     && (!f.period || ctx.now - Date.parse(v.publishedAt) <= f.period * DAY)
@@ -59,6 +60,15 @@ export function outlierList(ctx) {
     ${list.length > f.limit ? '<button type="button" class="btn secondary" data-action="more">Show more</button>' : ''}`;
 }
 
+/** Shown when one niche is selected: when it was searched, and ways to edit or remove it. */
+function nicheBar(ctx) {
+  const n = ctx.state.niches.find((x) => x.id === ctx.ui.niche);
+  if (!n) return '';
+  return `<div class="niche-bar"><span class="grow sub">🔭 ${esc(n.keywords || n.name)} · ${n.scannedAt ? `searched ${age(n.scannedAt, ctx.now)} ago` : 'not searched yet'}</span>
+    <button type="button" class="chip-btn" data-action="edit-niche" data-id="${esc(n.id)}">Edit</button>
+    <button type="button" class="chip-btn danger" data-action="remove-niche" data-id="${esc(n.id)}">Remove</button></div>`;
+}
+
 export function outliersView(ctx) {
   const { niches, channels, settings } = ctx.state;
   const f = ctx.ui;
@@ -75,6 +85,7 @@ export function outliersView(ctx) {
     ${niches.length || channels.length ? `<div class="chips scroll" role="group" aria-label="Niche">${chips.map(([id, name]) => `<button type="button" class="chip ${f.niche === id ? 'on' : ''}" data-action="niche" data-value="${esc(id)}" aria-pressed="${f.niche === id}">${esc(name)}</button>`).join('')}</div>
     <div class="seg" role="group" aria-label="Published">${PERIODS.map(([d, l]) => `<button type="button" data-action="period" data-value="${d}" class="${f.period === d ? 'on' : ''}" aria-pressed="${f.period === d}">${l}</button>`).join('')}</div>
     ${settings.includeShorts ? `<div class="seg" role="group" aria-label="Type">${[['all', 'All'], ['long', 'Long-form'], ['short', 'Shorts']].map(([k, l]) => `<button type="button" data-action="kind" data-value="${k}" class="${f.kind === k ? 'on' : ''}" aria-pressed="${f.kind === k}">${l}</button>`).join('')}</div>` : ''}` : ''}
+    ${nicheBar(ctx)}
     <div id="outlier-list">${outlierList(ctx)}</div>`;
 }
 

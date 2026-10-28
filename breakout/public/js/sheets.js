@@ -72,7 +72,7 @@ export function openNicheEditor(app, { id } = {}) {
     <p class="hint">Each search uses about 122 of the 10,000 free daily YouTube units. ${app.backend.mode === 'cloud' ? `Niches are searched again about every ${app.backend.config.nicheHours ?? 12} hours (up to ${max} niches).` : 'Niches are searched again when you open the app, at most twice a day.'}</p>
     <div class="scan-status" id="ne-status" role="status" hidden><span class="spinner" aria-hidden="true"></span> Searching YouTube and checking each channel’s normal…</div>
     <p class="form-error" id="ne-error" role="alert" hidden></p>
-    ${niche?.keywords ? '<button type="button" class="btn secondary" data-scan>Search again now</button>' : ''}
+    ${niche ? '<button type="button" class="btn secondary" data-scan>Search again now</button>' : ''}
     ${niche ? '<button type="button" class="btn danger-text" data-del>Delete niche</button>' : ''}
   </form>`, { label: niche ? niche.name : 'New niche' });
   const err = $('#ne-error', el);
@@ -91,7 +91,7 @@ export function openNicheEditor(app, { id } = {}) {
     btn.disabled = true; err.hidden = true;
     try {
       const saved = await store.saveNiche({ id: niche?.id, name, keywords });
-      const changed = keywords && (keywords !== niche?.keywords || !niche?.scannedAt);
+      const changed = keywords !== (niche?.keywords || niche?.name) || !niche?.scannedAt;
       finish(saved.id, changed ? await runScan(app, el, saved.id) : null);
     } catch (ex) { btn.disabled = false; fail(ex.message); }
   });
@@ -216,7 +216,7 @@ export function openVideo(app, id) {
       const b = ev.target.closest('[data-track]');
       b.disabled = true; b.textContent = 'Adding…';
       try {
-        const r = await store.addChannel(v.ytChannelId, v.nicheId);
+        const r = await store.addChannel(v.ytChannelId, v.nicheIds?.[0] ?? null);
         b.remove();
         toast(`Now tracking ${r.channel.title}`);
       } catch (err) { b.disabled = false; b.textContent = `📺 Track ${channelTitle}`; toast(err.message); }

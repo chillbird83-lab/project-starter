@@ -36,7 +36,7 @@ create table if not exists public.videos (
   user_id      uuid not null default auth.uid() references auth.users (id) on delete cascade,
   -- Set for videos of tracked channels; empty for videos found by a niche scan.
   channel_id   uuid references public.channels (id) on delete cascade,
-  niche_id     uuid references public.niches (id) on delete cascade,
+  niche_ids    uuid[] not null default '{}',  -- niches whose search found it (a video can be in several)
   source       text not null default 'channel' check (source in ('channel', 'search')),
   yt_video_id  text not null,
   yt_channel_id text not null default '',
@@ -65,7 +65,7 @@ create table if not exists public.videos (
 );
 create index if not exists videos_channel on public.videos (channel_id, published_at desc);
 create index if not exists videos_outliers on public.videos (user_id, is_outlier, published_at desc);
-create index if not exists videos_niche on public.videos (niche_id);
+create index if not exists videos_niches on public.videos using gin (niche_ids);
 create index if not exists niches_due on public.niches (scanned_at nulls first);
 
 -- Upgrading a database made with the first version of this file:
@@ -74,7 +74,8 @@ alter table public.niches add column if not exists scanned_at timestamptz;
 alter table public.niches drop constraint if exists niches_name_check;
 alter table public.niches add constraint niches_name_check check (char_length(name) between 1 and 80);
 alter table public.videos alter column channel_id drop not null;
-alter table public.videos add column if not exists niche_id uuid references public.niches (id) on delete cascade;
+alter table public.videos drop column if exists niche_id;
+alter table public.videos add column if not exists niche_ids uuid[] not null default '{}';
 alter table public.videos add column if not exists source text not null default 'channel';
 alter table public.videos add column if not exists yt_channel_id text not null default '';
 alter table public.videos add column if not exists channel_title text not null default '';
@@ -101,6 +102,16 @@ create table if not exists public.telegram_links (
   link_created_at timestamptz,
   linked_at       timestamptz
 );
+
+-- Removing a niche takes it off its videos; videos no niche or tracked channel needs any more go too.
+create or replace function public.forget_niche() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  update public.videos set niche_ids = array_remove(niche_ids, old.id) where user_id = old.user_id and old.id = any (niche_ids);
+  delete from public.videos where user_id = old.user_id and channel_id is null and niche_ids = '{}';
+  return old;
+end $$;
+drop trigger if exists niches_forget on public.niches;
+create trigger niches_forget after delete on public.niches for each row execute function public.forget_niche();
 
 alter table public.niches enable row level security;
 alter table public.channels enable row level security;

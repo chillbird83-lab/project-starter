@@ -1,5 +1,5 @@
 import { cloudBackend, loadConfig, localBackend, preferLocal, setPreferLocal } from './backend.js';
-import { closeSheet, sheetOpen, toast } from './overlay.js';
+import { closeSheet, confirmDialog, sheetOpen, toast } from './overlay.js';
 import { openAddChannel, openAddMenu, openChannel, openNicheEditor, openNiches, openOnboarding, openSettings, openVideo } from './sheets.js';
 import * as store from './store.js';
 import { $, $$, esc } from './util.js';
@@ -64,7 +64,7 @@ const app = {
 async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_NICHE_HOURS } = {}) {
   const { channels, niches } = store.get();
   const cutoff = Date.now() - nicheHours * 36e5;
-  const dueNiches = niches.filter((n) => n.keywords && (!n.scannedAt || Date.parse(n.scannedAt) < cutoff));
+  const dueNiches = niches.filter((n) => !n.scannedAt || Date.parse(n.scannedAt) < cutoff);
   if (ui.refreshing || (!channels.length && !dueNiches.length)) {
     if (!quiet && !ui.refreshing) toast('Everything was checked in the last hour.');
     return;
@@ -132,6 +132,8 @@ document.addEventListener('click', (e) => {
     case 'add': openAddMenu(app); break;
     case 'add-channel': openAddChannel(app, el.dataset.niche ? { nicheId: el.dataset.niche } : undefined); break;
     case 'add-niche': openNicheEditor(app); break;
+    case 'edit-niche': openNicheEditor(app, { id }); break;
+    case 'remove-niche': removeNiche(id); break;
     case 'settings': openSettings(app); break;
     case 'video': openVideo(app, id); break;
     case 'channel': openChannel(app, id); break;
@@ -182,6 +184,17 @@ document.addEventListener('visibilitychange', () => {
   if (app.backend.mode === 'local') maybeLocalRefresh();
 });
 
+async function removeNiche(id) {
+  const n = store.get().niches.find((x) => x.id === id);
+  if (!n || !await confirmDialog({ title: `Remove “${n.name}”?`, message: 'Videos found by this niche are removed. Tracked channels stay.', confirmLabel: 'Remove', destructive: true })) return;
+  try {
+    await store.deleteNiche(id);
+    ui.niche = 'all';
+    render();
+    toast('Niche removed');
+  } catch (e) { toast(e.message); }
+}
+
 function startSignIn() { signin = { step: 'email', email: '' }; render(); }
 
 function maybeOnboard() { if (!store.get().settings.onboarded) openOnboarding(app); }
@@ -191,7 +204,7 @@ function maybeLocalRefresh() {
   const { settings, channels, niches } = store.get();
   if (!settings.youtubeKey) return;
   const stale = (iso, hours) => !iso || Date.parse(iso) < Date.now() - hours * 36e5;
-  if (channels.some((c) => stale(c.checkedAt, LOCAL_REFRESH_HOURS)) || niches.some((n) => n.keywords && stale(n.scannedAt, LOCAL_NICHE_HOURS))) {
+  if (channels.some((c) => stale(c.checkedAt, LOCAL_REFRESH_HOURS)) || niches.some((n) => stale(n.scannedAt, LOCAL_NICHE_HOURS))) {
     refreshAll({ quiet: true, staleHours: LOCAL_REFRESH_HOURS, nicheHours: LOCAL_NICHE_HOURS });
   }
 }
@@ -224,5 +237,11 @@ store.subscribe(() => render());
 
 onScroll();
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // When a new version takes over, reload once so the screen isn't left running the old code.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloaded && !sheetOpen()) { reloaded = true; location.reload(); }
+  });
+  navigator.serviceWorker.register('./sw.js').then((r) => r.update()).catch(() => {});
 }

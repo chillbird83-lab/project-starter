@@ -105,7 +105,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
   const api = (path, body, method = 'POST') =>
     call(`api/${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json());
 
-  const VIDEO_COLS = 'id,channel_id,niche_id,source,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
+  const VIDEO_COLS = 'id,channel_id,niche_ids,source,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
 
   return {
     mode: 'cloud',
@@ -168,6 +168,9 @@ export function cloudBackend(config, { onSignedOut } = {}) {
 // Local (this device only)
 // ---------------------------------------------------------------------------
 
+/** Niches a stored video belongs to. Earlier versions kept a single `nicheId`; now a video can be in several. */
+const nichesOf = (v) => (Array.isArray(v?.nicheIds) ? v.nicheIds : v?.nicheId ? [v.nicheId] : []);
+
 export function localBackend(config) {
   let settings = { ...DEFAULT_SETTINGS };
   const yt = () => {
@@ -184,7 +187,7 @@ export function localBackend(config) {
     const videos = out.videos.map((v) => {
       const old = byYt.get(v.ytVideoId);
       return {
-        ...v, id: old?.id ?? uid(), channelId: channel.id, analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
+        ...v, id: old?.id ?? uid(), channelId: channel.id, nicheIds: nichesOf(old), analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
         saved: old?.saved ?? false, alertedAt: old?.alertedAt ?? (seed && v.isOutlier ? now : null), updatedAt: now,
       };
     });
@@ -200,7 +203,8 @@ export function localBackend(config) {
     async load() {
       const [niches, channels, videos, saved] = await Promise.all([db.getAll('niches'), db.getAll('channels'), db.getAll('videos'), db.get('kv', 'settings')]);
       settings = { ...DEFAULT_SETTINGS, onboarded: false, youtubeKey: '', geminiKey: '', geminiModel: '', ...saved };
-      return { niches, channels, videos, settings, telegram: { linked: false } };
+      const upgraded = videos.map((v) => ({ ...v, nicheIds: nichesOf(v) }));
+      return { niches, channels, videos: upgraded, settings, telegram: { linked: false } };
     },
     async saveSettings(s) { settings = { ...s }; await db.put('kv', settings, 'settings'); },
     async saveNiche({ id, name, keywords = '' }) {
@@ -212,14 +216,17 @@ export function localBackend(config) {
     async deleteNiche(id) {
       await db.del('niches', id);
       for (const c of (await db.getAll('channels')).filter((c) => c.nicheId === id)) await db.put('channels', { ...c, nicheId: null });
-      for (const v of (await db.getAll('videos')).filter((v) => v.nicheId === id && !v.channelId)) await db.del('videos', v.id);
+      for (const v of (await db.getAll('videos')).filter((v) => nichesOf(v).includes(id))) {
+        const nicheIds = nichesOf(v).filter((n) => n !== id);
+        if (!nicheIds.length && !v.channelId) await db.del('videos', v.id); else await db.put('videos', { ...v, nicheIds });
+      }
     },
     /** Finds outliers from any channel for the niche's search words (about 122 of your quota units). */
     async scanNiche(nicheId) {
       const niche = await db.get('niches', nicheId);
       if (!niche) throw new Error('Unknown niche.');
-      const query = nicheQuery({ keywords: niche.keywords });
-      if (!query) throw new Error('Add search words to this niche first.');
+      const query = nicheQuery(niche);
+      if (!query) throw new Error('This niche has no name to search for.');
       const [channels, existing] = await Promise.all([db.getAll('channels'), db.getAll('videos')]);
       const tracked = new Set(channels.map((c) => c.ytChannelId));
       const byYt = new Map(existing.map((v) => [v.ytVideoId, v]));
@@ -228,7 +235,7 @@ export function localBackend(config) {
       const videos = found.map((v) => {
         const old = byYt.get(v.ytVideoId);
         return {
-          ...v, id: old?.id ?? uid(), channelId: null, nicheId, analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
+          ...v, id: old?.id ?? uid(), channelId: null, nicheIds: [...new Set([...nichesOf(old), nicheId])], analysis: old?.analysis ?? null, analysedAt: old?.analysedAt ?? null,
           saved: old?.saved ?? false, alertedAt: old?.alertedAt ?? null, updatedAt: now,
         };
       });

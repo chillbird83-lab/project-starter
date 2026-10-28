@@ -136,11 +136,14 @@ export async function processNiche(env, niche, { settings, chatId = null, now = 
   const seed = !niche.scanned_at; // the first scan's finds are not "new", so no alert flood
   let rows = [];
   if (found.length) {
+    // A video can belong to several niches (e.g. "history" and "ww2"): keep the niches it already has.
+    const existing = await sb(env, `videos?select=yt_video_id,niche_ids&user_id=eq.${niche.user_id}&yt_video_id=in.(${found.map((v) => v.ytVideoId).join(',')})`);
+    const had = new Map(existing.map((r) => [r.yt_video_id, r.niche_ids || []]));
     rows = await sb(env, 'videos?on_conflict=user_id,yt_video_id', {
       method: 'POST',
       prefer: 'resolution=merge-duplicates,return=representation',
       body: found.map((v) => ({
-        ...discoveryToRow(v), user_id: niche.user_id, niche_id: niche.id, updated_at: nowIso,
+        ...discoveryToRow(v), user_id: niche.user_id, niche_ids: [...new Set([...(had.get(v.ytVideoId) ?? []), niche.id])], updated_at: nowIso,
         ...(seed ? { alerted_at: v.isOutlier ? nowIso : null } : {}),
       })),
     });
@@ -151,9 +154,9 @@ export async function processNiche(env, niche, { settings, chatId = null, now = 
   return { niche: rowToNiche({ ...niche, scanned_at: nowIso }), videos, alerted };
 }
 
-/** Only a user's first MAX_NICHES niches with search words are scanned, to protect the shared quota. */
+/** Only a user's first MAX_NICHES niches are scanned, to protect the shared quota. */
 async function nicheAllowed(env, niche) {
-  const list = await sb(env, `niches?select=id&user_id=eq.${niche.user_id}&keywords=neq.&order=created_at.asc&limit=${limits(env).maxNiches}`);
+  const list = await sb(env, `niches?select=id&user_id=eq.${niche.user_id}&order=created_at.asc&limit=${limits(env).maxNiches}`);
   return list.some((n) => n.id === niche.id);
 }
 
@@ -161,7 +164,7 @@ async function nicheAllowed(env, niche) {
 export async function runNicheScan(env, now = Date.now()) {
   if (!cloudReady(env)) return { scanned: 0 };
   const cutoff = new Date(now - limits(env).nicheHours * 36e5).toISOString();
-  const due = await sb(env, `niches?select=*&keywords=neq.&or=(scanned_at.is.null,scanned_at.lt.${cutoff})&order=scanned_at.asc.nullsfirst&limit=3`);
+  const due = await sb(env, `niches?select=*&or=(scanned_at.is.null,scanned_at.lt.${cutoff})&order=scanned_at.asc.nullsfirst&limit=3`);
   for (const niche of due) {
     if (!(await nicheAllowed(env, niche))) {
       await sb(env, `niches?id=eq.${niche.id}`, { method: 'PATCH', body: { scanned_at: new Date(now).toISOString() } });
@@ -272,11 +275,11 @@ async function scanNicheNow(request, env, user) {
   if (!UUID_RE.test(body.nicheId || '')) return fail(400, 'Unknown niche.');
   const [niche] = await sb(env, `niches?select=*&id=eq.${body.nicheId}&user_id=eq.${user.id}`);
   if (!niche) return fail(404, 'Unknown niche.');
-  if (!nicheQuery({ keywords: niche.keywords })) return fail(400, 'Add search words to this niche first.');
+  if (!nicheQuery(niche)) return fail(400, 'This niche has no name to search for.');
   if (niche.scanned_at && Date.now() - Date.parse(niche.scanned_at) < MANUAL_SCAN_MINUTES * 6e4) {
     return fail(429, `${niche.name} was scanned a few minutes ago. Niche scans use a lot of YouTube quota, so try again in ${MANUAL_SCAN_MINUTES} minutes.`);
   }
-  if (!(await nicheAllowed(env, niche))) return fail(403, `Only your first ${limits(env).maxNiches} niches with search words are scanned.`);
+  if (!(await nicheAllowed(env, niche))) return fail(403, `Only your first ${limits(env).maxNiches} niches are searched. Remove one to search this one.`);
   const profile = await loadProfile(env, user.id);
   const chatId = telegramReady(env) ? await chatIdFor(env, user.id) : null;
   try {

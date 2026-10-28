@@ -91,7 +91,8 @@ export async function deleteNiche(id) {
   set({
     niches: state.niches.filter((n) => n.id !== id),
     channels: state.channels.map((c) => (c.nicheId === id ? { ...c, nicheId: null } : c)),
-    videos: state.videos.filter((v) => v.channelId || v.nicheId !== id),
+    videos: state.videos.map((v) => (v.nicheIds?.includes(id) ? { ...v, nicheIds: v.nicheIds.filter((n) => n !== id) } : v))
+      .filter((v) => v.channelId || v.nicheIds?.length),
   });
 }
 

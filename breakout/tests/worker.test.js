@@ -182,7 +182,7 @@ test('niche scan: finds outliers from any channel, skips tracked channels, rate-
     assert.equal(q, 'budget cooking | meal prep');
     assert.deepEqual(out.videos.map((v) => v.ytVideoId).sort(), ['breakout001', 'tinyhit0001']);
     const tiny = w.sb.db.videos.find((v) => v.yt_video_id === 'tinyhit0001');
-    assert.equal(tiny.niche_id, NICHE);
+    assert.deepEqual(tiny.niche_ids, [NICHE]);
     assert.equal(tiny.channel_id, undefined);
     assert.equal(tiny.channel_title, 'Tiny Kitchen');
     assert.ok(tiny.alerted_at, 'first scan seeds alerts');
@@ -197,17 +197,17 @@ test('niche scan: finds outliers from any channel, skips tracked channels, rate-
   } finally { w.restore(); }
 });
 
-test('niche scan needs search words and respects the niche limit', async () => {
+test('a niche without search words searches its name; the niche limit applies', async () => {
   const w = world({ niches: [
-    { id: NICHE, user_id: ALICE, name: 'Just a group', keywords: '', created_at: '2026-01-01' },
-    { id: '44444444-4444-4444-8444-444444444444', user_id: ALICE, name: 'A', keywords: 'a', created_at: '2026-01-02' },
-    { id: '55555555-5555-4555-8555-555555555555', user_id: ALICE, name: 'B', keywords: 'b', created_at: '2026-01-03' },
+    { id: NICHE, user_id: ALICE, name: 'history', keywords: '', created_at: '2026-01-01' },
+    { id: '44444444-4444-4444-8444-444444444444', user_id: ALICE, name: 'ww2', keywords: '', created_at: '2026-01-02' },
   ] });
   try {
-    assert.equal((await call('/api/niches/scan', { body: { nicheId: NICHE } })).status, 400);
     const e = env({ MAX_NICHES: '1' });
-    assert.equal((await call('/api/niches/scan', { body: { nicheId: '55555555-5555-4555-8555-555555555555' } }, e)).status, 403);
-    assert.equal((await call('/api/niches/scan', { body: { nicheId: '44444444-4444-4444-8444-444444444444' } }, e)).status, 200);
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: NICHE } }, e)).status, 200);
+    assert.equal(w.yt.calls.find((u) => u.pathname.endsWith('/search')).searchParams.get('q'), 'history');
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: '44444444-4444-4444-8444-444444444444' } }, e)).status, 403);
+    assert.equal((await call('/api/niches/scan', { body: { nicheId: '44444444-4444-4444-8444-444444444444' } })).status, 200);
   } finally { w.restore(); }
 });
 
@@ -241,5 +241,18 @@ test('the 15-minute cron still runs channel checks', async () => {
     await worker.scheduled({ cron: '*/15 * * * *', scheduledTime: Date.parse('2026-10-28T12:00:00Z') }, env(), { waitUntil: (p) => tasks.push(p) });
     await Promise.all(tasks);
     assert.ok(w.sb.db.channels[0].checked_at);
+  } finally { w.restore(); }
+});
+
+test('a video found by two overlapping niches belongs to both', async () => {
+  const B = '66666666-6666-4666-8666-666666666666';
+  const w = world({ niches: [
+    { id: NICHE, user_id: ALICE, name: 'history', keywords: 'history', created_at: '2026-01-01' },
+    { id: B, user_id: ALICE, name: 'ww2', keywords: 'ww2', created_at: '2026-01-02' },
+  ] });
+  try {
+    await call('/api/niches/scan', { body: { nicheId: NICHE } });
+    await call('/api/niches/scan', { body: { nicheId: B } });
+    assert.deepEqual(w.sb.db.videos.find((v) => v.yt_video_id === 'tinyhit0001').niche_ids, [NICHE, B]);
   } finally { w.restore(); }
 });

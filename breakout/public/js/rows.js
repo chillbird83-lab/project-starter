@@ -31,7 +31,7 @@ export const rowToVideo = (r) => ({
   thumb: r.thumb, publishedAt: r.published_at, durationS: r.duration_s, isShort: r.is_short, views: Number(r.views) || 0,
   likes: r.likes == null ? null : Number(r.likes), comments: r.comments == null ? null : Number(r.comments),
   score: Number(r.score) || 0, isOutlier: r.is_outlier, alertedAt: r.alerted_at ?? null,
-  nicheId: r.niche_id ?? null, ytChannelId: r.yt_channel_id || '', channelTitle: r.channel_title || '',
+  nicheIds: Array.isArray(r.niche_ids) ? r.niche_ids : [], ytChannelId: r.yt_channel_id || '', channelTitle: r.channel_title || '',
   channelSubs: r.channel_subs == null ? null : Number(r.channel_subs), baseline: Number(r.baseline) || 0,
   baselineKind: r.baseline_kind || 'median', source: r.source || 'channel',
   analysis: r.analysis ?? null, analysedAt: r.analysed_at ?? null, saved: !!r.saved, updatedAt: r.updated_at,
