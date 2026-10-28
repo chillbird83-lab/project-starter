@@ -1,0 +1,99 @@
+name: Deploy Breakout to Cloudflare
+
+# Required repository secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
+# For accounts + scheduled tracking: secrets YOUTUBE_API_KEY, SUPABASE_SERVICE_ROLE_KEY and variables SUPABASE_URL, SUPABASE_ANON_KEY.
+# Optional: secrets GEMINI_API_KEY, TELEGRAM_BOT_TOKEN; variables TELEGRAM_BOT_USERNAME, APP_URL, GEMINI_MODEL.
+# With only the Cloudflare secrets the app deploys in "your own API keys" mode.
+on:
+  push:
+    branches: [main, claude/compassionate-cray-lybdji]
+    paths: ['breakout/**', '.github/workflows/breakout-deploy.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: breakout-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: breakout
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+      - name: Check the Cloudflare secrets
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID under Settings → Secrets and variables → Actions, then re-run this workflow."
+            exit 1
+          fi
+
+      - name: Fill in settings from repository variables
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          TELEGRAM_BOT_USERNAME: ${{ vars.TELEGRAM_BOT_USERNAME }}
+          APP_URL: ${{ vars.APP_URL }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            let toml = fs.readFileSync("wrangler.toml", "utf8");
+            for (const k of ["SUPABASE_URL", "SUPABASE_ANON_KEY", "TELEGRAM_BOT_USERNAME", "APP_URL", "GEMINI_MODEL"]) {
+              const v = (process.env[k] || "").trim().replace(/^@/, "");
+              if (v) toml = toml.replace(new RegExp(`^${k} = .*$`, "m"), `${k} = ${JSON.stringify(v)}`);
+            }
+            fs.writeFileSync("wrangler.toml", toml);
+          '
+
+      - name: Deploy
+        id: deploy
+        run: |
+          npx --yes wrangler@4 deploy 2>&1 | tee deploy.log
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Breakout is live: ${url:-see the log above}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload secrets
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          node -e '
+            const out = {};
+            for (const k of ["YOUTUBE_API_KEY", "GEMINI_API_KEY", "SUPABASE_SERVICE_ROLE_KEY", "TELEGRAM_BOT_TOKEN"]) if (process.env[k]) out[k] = process.env[k];
+            require("fs").writeFileSync("secrets.json", JSON.stringify(out));
+            console.log(Object.keys(out).length ? `Uploading: ${Object.keys(out).join(", ")}` : "No optional secrets set.");
+          '
+          if [ "$(cat secrets.json)" != "{}" ]; then npx --yes wrangler@4 secret bulk secrets.json; fi
+          rm -f secrets.json
+
+      - name: Point the Telegram bot at the Worker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          APP_URL: ${{ vars.APP_URL || steps.deploy.outputs.url }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$APP_URL" ]; then echo "Telegram not configured; skipping."; exit 0; fi
+          node -e '
+            const token = process.env.TELEGRAM_BOT_TOKEN;
+            const secret = require("crypto").createHash("sha256").update(`breakout:${token}`).digest("hex").slice(0, 48);
+            const url = `${process.env.APP_URL.replace(/\/+$/, "")}/api/telegram/webhook`;
+            fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url, secret_token: secret, allowed_updates: ["message", "callback_query"], drop_pending_updates: true }),
+            }).then((r) => r.json()).then((r) => { console.log(r.ok ? `Telegram webhook set to ${url}` : `Telegram said: ${r.description}`); if (!r.ok) process.exit(1); });
+          '

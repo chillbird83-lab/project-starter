@@ -1,0 +1,29 @@
+# Cloudflare Worker that serves the app from ./public and runs the API in ./worker.
+# Deploy:   npx wrangler deploy   (or the "Deploy Breakout to Cloudflare" GitHub Action)
+# Secrets:  YOUTUBE_API_KEY, GEMINI_API_KEY, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN
+name = "breakout"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# Every 15 minutes: re-check the channels that are due (each one every REFRESH_HOURS) and send alerts.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+# Supabase → Project Settings → API. The anon key is public by design; row-level security protects the data.
+SUPABASE_URL = ""
+SUPABASE_ANON_KEY = ""
+# The bot's username from @BotFather, without the @.
+TELEGRAM_BOT_USERNAME = ""
+# Where the app lives (e.g. https://breakout.you.workers.dev). Used to register the Telegram webhook.
+APP_URL = ""
+GEMINI_MODEL = "gemini-flash-latest"
+# Quota guards. YouTube gives 10,000 units a day; one channel check costs 3.
+MAX_CHANNELS = "30"
+REFRESH_HOURS = "4"
+BATCH_SIZE = "6"
+ANALYSES_PER_DAY = "25"

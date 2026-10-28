@@ -1,0 +1,13 @@
+{
+  "name": "breakout",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Breakout — YouTube niche & competitor tracker that spots outlier videos and explains why they worked.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "test": "node --test"
+  }
+}
