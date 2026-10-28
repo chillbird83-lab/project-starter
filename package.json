@@ -2,7 +2,7 @@
   "name": "budgie",
   "version": "1.0.0",
   "private": true,
-  "description": "Budgie (budget tracker) and Lectern (lecture recorder & organiser) — installable web apps, no dependencies.",
+  "description": "Budgie — a weekly and long-term budget tracker (installable web app, no dependencies).",
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.mjs",

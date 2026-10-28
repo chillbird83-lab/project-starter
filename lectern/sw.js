@@ -1,35 +1,13 @@
-// Offline support: cache the app shell, serve it cache-first, refresh in the background.
-// Recordings are not touched here — they live in IndexedDB.
-const CACHE = 'lectern-v1';
-const SHELL = [
-  './', 'index.html', 'manifest.webmanifest', 'css/styles.css',
-  'js/app.js', 'js/db.js', 'js/format.js', 'js/logic.js', 'js/overlay.js', 'js/player.js', 'js/recorder.js',
-  'js/sheets.js', 'js/store.js', 'js/util.js', 'js/views.js', 'js/zip.js',
-  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
-];
-
-self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
-});
+// Lectern moved to https://chillbird83-lab.github.io/lectern/. This replaces its old offline worker on
+// phones that opened it here: it deletes the old cache, unregisters itself and sends open windows to the
+// new address. Recordings are unaffected — they live in the site's IndexedDB, which both addresses share.
+self.addEventListener('install', () => self.skipWaiting());
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith('lectern-') && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()),
-  );
-});
-
-self.addEventListener('fetch', (e) => {
-  const { request } = e;
-  const url = new URL(request.url);
-  if (request.method !== 'GET' || url.origin !== location.origin || !url.pathname.startsWith(new URL('./', location).pathname)) return;
-  e.respondWith(
-    caches.match(request, { ignoreSearch: true }).then((cached) => {
-      const network = fetch(request).then((res) => {
-        if (res.ok) caches.open(CACHE).then((c) => c.put(request, res.clone()));
-        return res;
-      });
-      if (cached) { network.catch(() => {}); return cached; }
-      return network.catch(() => caches.match('index.html'));
-    }),
-  );
+  e.waitUntil((async () => {
+    await caches.delete('lectern-v1');
+    await self.registration.unregister();
+    const windows = await self.clients.matchAll({ type: 'window' });
+    await Promise.all(windows.map((w) => w.navigate('../../lectern/').catch(() => {})));
+  })());
 });
