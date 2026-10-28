@@ -39,10 +39,20 @@ Shoebox prepares figures and keeps your records. It does **not** submit to HMRC 
 
 ## Try it in 10 seconds (no accounts)
 
+From the repository folder, start the app in this-device mode:
+
 ```bash
 cd shoebox
-npm start        # http://localhost:8080 — this-device mode
-npm test         # tax rules, AI parsing and the Worker API
+```
+
+```bash
+npm start
+```
+
+Then open http://localhost:8080. To run the tests (tax rules, AI parsing and the Worker API):
+
+```bash
+npm test
 ```
 
 ## Set it up properly (about 20 minutes, all free)

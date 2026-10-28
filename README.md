@@ -25,8 +25,13 @@ A weekly and long-term budget tracker with an Apple-style design. It is an insta
 ## Run it
 
 ```bash
-npm start        # http://localhost:8080
-npm test         # unit tests for Budgie and Shoebox (Node's built-in test runner)
+npm start
+```
+
+Then open http://localhost:8080. To run the unit tests for Budgie and Shoebox (Node's built-in test runner):
+
+```bash
+npm test
 ```
 
 ### Use it on your phone
