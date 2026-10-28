@@ -35,7 +35,20 @@ export const rowToVideo = (r) => ({
   channelSubs: r.channel_subs == null ? null : Number(r.channel_subs), baseline: Number(r.baseline) || 0,
   baselineKind: r.baseline_kind || 'median', source: r.source || 'channel', lang: r.lang || '',
   snapshots: Array.isArray(r.snapshots) ? r.snapshots : [], risingAlertedAt: r.rising_alerted_at ?? null,
+  opens: Number(r.opens) || 0, openedAt: r.opened_at ?? null,
   analysis: r.analysis ?? null, analysedAt: r.analysed_at ?? null, saved: !!r.saved, updatedAt: r.updated_at,
+});
+
+export const ideaToRow = (i) => ({
+  title: i.title, angle: i.angle, notes: i.notes, formula: i.formula, status: i.status, video_id: i.videoId ?? null,
+  source_yt_video_id: i.sourceYtVideoId, source_title: i.sourceTitle, source_channel: i.sourceChannel, source_score: i.sourceScore,
+});
+
+export const rowToIdea = (r) => ({
+  id: r.id, title: r.title, angle: r.angle || '', notes: r.notes || '', formula: r.formula || '', status: r.status || 'todo',
+  videoId: r.video_id ?? null, sourceYtVideoId: r.source_yt_video_id || '', sourceTitle: r.source_title || '',
+  sourceChannel: r.source_channel || '', sourceScore: r.source_score == null ? null : Number(r.source_score),
+  createdAt: r.created_at, updatedAt: r.updated_at,
 });
 
 export const rowToNiche = (r) => ({ id: r.id, name: r.name, keywords: r.keywords || '', exclude: r.exclude || '', scannedAt: r.scanned_at ?? null });
@@ -49,6 +62,7 @@ export const settingsFromProfile = (p = {}) => ({
   threshold: Number(p.threshold) || 3, minViews: Number(p.min_views ?? 1000),
   includeShorts: p.include_shorts !== false, alerts: p.alerts !== false, language: p.language || 'any',
   hideMixed: p.hide_mixed !== false, hideLanguages: Array.isArray(p.hide_languages) ? p.hide_languages : [],
+  weeklyReport: p.weekly_report !== false, dismissedChannels: Array.isArray(p.dismissed_channels) ? p.dismissed_channels : [],
 });
 
 /** 950 → "950", 12750 → "12.8K", 1234567 → "1.2M" */

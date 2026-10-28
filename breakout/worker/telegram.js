@@ -1,4 +1,5 @@
 // Telegram Bot API: alert and analysis messages, and the webhook secret.
+import { patternLine } from '../public/js/report.js';
 import { age, compact, scoreLabel } from '../public/js/rows.js';
 import { videoURL } from '../public/js/youtube.js';
 
@@ -47,6 +48,45 @@ export function risingMessage(video, speed, now = Date.now()) {
     ].join('\n'),
     reply_markup: { inline_keyboard: [[{ text: '🧠 Why did it work?', callback_data: `an:${video.id}` }, { text: '▶️ Watch', url: videoURL(video.ytVideoId) }]] },
   };
+}
+
+const dayMonth = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
+/**
+ * The Monday report: per niche, the top breakouts and what their titles share (plus the AI's one-liner
+ * and idea when there is one). Niches are added until the message would pass Telegram's limit.
+ */
+export function reportMessage(report, summary = null, appUrl = '') {
+  const items = summary?.items ?? {};
+  const active = report.groups.filter((g) => g.total);
+  const quiet = report.groups.filter((g) => !g.total).map((g) => h(g.name));
+  const head = [
+    `📊 <b>Your week on Breakout</b> · ${dayMonth(report.from)} – ${dayMonth(report.to)}`,
+    active.length
+      ? `${report.total} breakout${report.total === 1 ? '' : 's'} across ${active.length} niche${active.length === 1 ? '' : 's'}${report.rising ? ` · 🔥 ${report.rising} rising now` : ''}`
+      : 'No breakouts in your niches this week. Breakout keeps looking.',
+  ].join('\n');
+  const section = (g) => {
+    const lines = [`🔭 <b>${h(g.name)}</b> — ${g.total} breakout${g.total === 1 ? '' : 's'}`];
+    g.top.slice(0, 3).forEach((v, i) => lines.push(`${i + 1}. <b>${scoreLabel(v.score)}</b> <a href="${videoURL(v.ytVideoId)}">${h(v.title)}</a>${v.channelTitle ? ` · ${h(v.channelTitle)}` : ''}`));
+    if (g.patterns.length) lines.push(`<i>What they share:</i> ${g.patterns.slice(0, 3).map((p) => h(patternLine(p))).join('; ')}`);
+    if (g.words.length) lines.push(`<i>Shared words:</i> ${g.words.slice(0, 4).map((w) => h(w.word)).join(', ')}`);
+    if (items[g.key]?.pattern) lines.push(`✨ ${h(items[g.key].pattern)}`);
+    if (items[g.key]?.idea) lines.push(`💡 Try: <b>${h(items[g.key].idea)}</b>`);
+    return lines.join('\n');
+  };
+  const foot = [quiet.length ? `Quiet this week: ${quiet.join(', ')}` : '', appUrl ? `<a href="${h(appUrl)}">Open Breakout</a> for the full report.` : ''].filter(Boolean).join('\n');
+  let text = head;
+  let left = active.length;
+  for (const g of active) {
+    const next = `${text}\n\n${section(g)}`;
+    if (next.length + foot.length + 60 > MAX_TEXT) break;
+    text = next;
+    left--;
+  }
+  if (left) text += `\n\n…and ${left} more niche${left === 1 ? '' : 's'} in the app.`;
+  if (foot) text += `\n\n${foot}`;
+  return { parse_mode: 'HTML', text, link_preview_options: { is_disabled: true } };
 }
 
 export function analysisMessage(video, a) {

@@ -1,8 +1,11 @@
-// Screens: Outliers feed, Channels, sign-in.
+// Screens: Outliers feed, This week (report), Ideas, Channels (with suggestions), sign-in.
 import { age, compact, scoreLabel } from './rows.js';
 import { DAY, isOutlier } from './score.js';
 import { isExcluded, nicheExcludes } from './discover.js';
+import { STAGES, ideasIn, nextStage } from './ideas.js';
 import { LANGUAGES, languageName, matchesLanguage } from './lang.js';
+import { weeklyReport } from './report.js';
+import { interestQuery, suggestChannels } from './similar.js';
 import { velocity } from './trend.js';
 import { esc } from './util.js';
 
@@ -139,11 +142,125 @@ export function channelsView(ctx) {
   return `<div class="screen-head"><div><h1 class="large-title">Channels</h1>
       <p class="subtitle">${channels.length} of ${ctx.backend.config.maxChannels ?? 30} tracked</p></div>
     <button type="button" class="chip-btn" data-action="niches">Niches</button></div>
+    ${suggestionsSection(ctx)}
     ${channels.length ? '' : `<div class="empty"><div class="empty-emoji" aria-hidden="true">📺</div><h3>No channels yet</h3>
       <p>Optional: niches already find outliers from any channel. Track a channel to follow a specific competitor closely.</p><button type="button" class="btn primary" data-action="add-channel">Track a channel</button></div>`}
     ${groups.map(([n, list]) => `<section class="group"><h3 class="group-title"><span>${esc(n ? n.name : 'No niche')}</span><span>${list.length || ''}</span></h3>
       <div class="card list">${list.map(row).join('') || `<button type="button" class="row add-row" data-action="add-channel" data-niche="${esc(n.id)}"><span class="ico add-ico" aria-hidden="true">+</span><span class="title">Add a channel</span></button>`}</div></section>`).join('')}
     <p class="footnote">Channels are checked ${ctx.backend.mode === 'cloud' ? `about every ${ctx.backend.config.refreshHours ?? 4} hours` : 'when you open the app'}. Scores compare each video with the channel’s typical views at the same age.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// Suggested channels
+// ---------------------------------------------------------------------------
+
+export const suggestionsFor = (state) => suggestChannels({
+  videos: state.videos, channels: state.channels, ideas: state.ideas, settings: state.settings,
+  dismissed: state.settings.dismissedChannels, found: state.similar?.channels,
+});
+
+function suggestionsSection(ctx) {
+  const { state, ui } = ctx;
+  const list = suggestionsFor(state);
+  const q = interestQuery({ videos: state.videos, ideas: state.ideas });
+  if (!list.length && !q && !state.videos.some((v) => !v.channelId)) return '';
+  const row = (c) => `<div class="row suggest">
+      <button type="button" class="suggest-main" data-action="suggest-open" data-yt="${esc(c.ytChannelId)}" ${c.sample?.id ? `data-id="${esc(c.sample.id)}"` : c.sample?.ytVideoId ? `data-video="${esc(c.sample.ytVideoId)}"` : ''}>
+        ${c.sample?.thumb ? `<img class="suggest-thumb" src="${esc(c.sample.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="avatar letter" aria-hidden="true">${esc((c.title || '?').charAt(0).toUpperCase())}</span>`}
+        <span class="grow"><span class="title">${esc(c.title)}</span>
+          <span class="sub wrap">${c.subs != null ? `${compact(c.subs)} subs · ` : ''}${esc(c.reason)}</span></span></button>
+      <button type="button" class="chip-btn mini" data-action="track-suggested" data-yt="${esc(c.ytChannelId)}" data-niche="${esc(c.nicheId ?? '')}" aria-label="Track ${esc(c.title)}">Track</button>
+      <button type="button" class="icon-btn mini-x" data-action="dismiss-suggested" data-yt="${esc(c.ytChannelId)}" aria-label="Not interested in ${esc(c.title)}">✕</button>
+    </div>`;
+  const last = state.similar?.at ? ` Last search: “${esc(state.similar.query)}”, ${age(state.similar.at, ctx.now)} ago.` : '';
+  return `<section class="group"><h3 class="group-title"><span>Suggested for you</span><span>${list.length || ''}</span></h3>
+    <div class="card list">${list.map(row).join('')}
+      <button type="button" class="row add-row" data-action="find-similar" ${q && !ui.findingSimilar ? '' : 'disabled'}>
+        <span class="ico add-ico" aria-hidden="true">${ui.findingSimilar ? '<span class="spinner"></span>' : '🔎'}</span>
+        <span class="grow"><span class="title">${ui.findingSimilar ? 'Looking for channels like these…' : 'Find more like these'}</span>
+        <span class="sub wrap">${q ? `Searches YouTube for “${esc(q.query)}” and keeps small channels (about 130 quota units).` : 'Open a few outliers you like first.'}</span></span></button>
+    </div>
+    <p class="hint">${list.length ? 'Small channels (under 100K subscribers) behind the outliers you open, save and analyse.' : 'Open, save or analyse a few outliers you like, and Breakout will suggest small channels behind them.'}${last}</p></section>`;
+}
+
+// ---------------------------------------------------------------------------
+// This week
+// ---------------------------------------------------------------------------
+
+const dayMonth = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+const pct = (p) => `<b>${p.count} of ${p.total}</b>`;
+
+export const reportFor = (state, now) => weeklyReport({ ...state, now });
+
+export function reportView(ctx) {
+  const { state, ui, now, backend } = ctx;
+  const report = reportFor(state, now);
+  const sum = state.reportSummary?.at && now - Date.parse(state.reportSummary.at) < 7 * DAY ? state.reportSummary : null;
+  const ai = backend.mode === 'local' || backend.config.ai;
+  const active = report.groups.filter((g) => g.total);
+  const head = `<div class="screen-head"><div><h1 class="large-title">This week</h1>
+    <p class="subtitle">Breakouts from ${dayMonth(report.from)} to ${dayMonth(report.to)}</p></div></div>`;
+  if (!report.groups.length) {
+    return `${head}<div class="empty"><div class="empty-emoji" aria-hidden="true">📊</div><h3>Your weekly report</h3>
+      <p>Add a niche and each week you’ll see its top breakouts here, with the title patterns they share.</p>
+      <button type="button" class="btn primary" data-action="add-niche">Add a niche</button></div>`;
+  }
+  const tg = backend.mode === 'cloud' && backend.config.telegram;
+  const note = tg ? (state.telegram.linked && state.settings.weeklyReport ? 'This report also arrives on Telegram every Monday morning.' : 'Get this report on Telegram every Monday: Settings → Connect Telegram.') : '';
+  const aiCard = !report.total || !ai ? '' : sum
+    ? `<p class="hint ai-note">✨ AI summary from ${age(sum.at, now)} ago · <button type="button" class="link small" data-action="summarise" ${ui.summarising ? 'disabled' : ''}>${ui.summarising ? 'Updating…' : 'Update'}</button></p>`
+    : `<button type="button" class="btn primary ai-btn" data-action="summarise" ${ui.summarising ? 'disabled' : ''}>${ui.summarising ? 'Reading this week’s titles…' : '✨ What do they have in common?'}</button>`;
+  const group = (g) => {
+    const s = sum?.items?.[g.key];
+    const body = !g.total ? '<p class="muted">No breakouts this week. Breakout keeps looking.</p>' : `
+      ${s ? `<p class="ai-pattern">✨ ${esc(s.pattern)}</p>${s.idea ? `<div class="ai-idea"><span class="grow">💡 Try: <b>${esc(s.idea)}</b></span><button type="button" class="chip-btn mini" data-action="save-report-idea" data-key="${esc(g.key)}">Save idea</button></div>` : ''}` : ''}
+      ${g.patterns.length ? `<h4 class="mini-head">What their titles share</h4><ul class="patterns">${g.patterns.map((p) => `<li>${pct(p)} · ${esc(p.label)}<span class="sub wrap">e.g. “${esc(p.example)}”</span></li>`).join('')}</ul>`
+        : g.total === 1 ? '<p class="muted small">One breakout so far: patterns show up once there are a few.</p>' : '<p class="muted small">No common title pattern this week: these broke out for different reasons.</p>'}
+      ${g.words.length ? `<p class="small shared-words">Shared words: ${g.words.map((w) => `<span class="word">${esc(w.word)} <i>${w.count}</i></span>`).join(' ')}</p>` : ''}
+      ${g.formulas.length ? `<h4 class="mini-head">Title formulas from your analyses</h4>${g.formulas.map((f) => `<button type="button" class="formula-line" data-action="copy" data-value="${esc(f)}">${esc(f)}</button>`).join('')}` : ''}`;
+    return `<section class="group report-group"><h3 class="group-title"><span>${g.key === 'tracked' ? '📺' : '🔭'} ${esc(g.name)}</span><span>${g.total ? `${g.total} breakout${g.total === 1 ? '' : 's'}${g.rising ? ` · 🔥 ${g.rising}` : ''}` : ''}</span></h3>
+      <div class="card pad report-card">${body}</div>
+      ${g.total ? `<div class="vgrid">${g.top.slice(0, 4).map((v) => videoCard(v, v.channelTitle || state.channels.find((c) => c.id === v.channelId)?.title || '', now)).join('')}</div>
+        ${g.nicheId && g.total > 4 ? `<button type="button" class="link center-link" data-action="show-niche" data-id="${esc(g.nicheId)}">See all ${g.total} in Outliers ›</button>` : ''}` : ''}</section>`;
+  };
+  return `${head}
+    <dl class="card stats report-stats"><div><dt>Breakouts</dt><dd>${report.total}</dd></div><div><dt>Rising now</dt><dd>${report.rising}</dd></div><div><dt>Niches</dt><dd>${active.length} of ${report.groups.length}</dd></div></dl>
+    ${aiCard}
+    ${[...active, ...report.groups.filter((g) => !g.total)].map(group).join('')}
+    ${note ? `<p class="footnote">${note}</p>` : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Ideas
+// ---------------------------------------------------------------------------
+
+const MOVE_LABEL = { todo: 'Start making →', making: '✓ Published', done: 'Make another' };
+
+export function ideasView(ctx) {
+  const { ideas } = ctx.state;
+  const stage = ctx.ui.stage;
+  const count = (s) => ideas.filter((i) => i.status === s).length;
+  const list = ideasIn(ideas, stage);
+  const card = (i) => `<div class="card idea-card">
+      <button type="button" class="idea-main" data-action="idea" data-id="${esc(i.id)}">
+        <span class="title">${esc(i.title)}</span>
+        ${i.angle ? `<span class="sub wrap">${esc(i.angle)}</span>` : ''}
+        ${i.notes ? `<span class="sub wrap idea-notes">📝 ${esc(i.notes.slice(0, 140))}${i.notes.length > 140 ? '…' : ''}</span>` : ''}
+        ${i.sourceTitle ? `<span class="idea-src">From “${esc(i.sourceTitle)}”${i.sourceScore ? ` · ${scoreLabel(i.sourceScore)}` : ''}</span>` : ''}
+      </button>
+      <div class="idea-actions"><button type="button" class="chip-btn mini" data-action="idea-move" data-id="${esc(i.id)}" data-to="${nextStage(i.status)}">${MOVE_LABEL[i.status]}</button></div>
+    </div>`;
+  const empty = {
+    todo: ideas.length ? 'Nothing waiting. Save more from “Why did it work?” on any outlier.' : 'Tap 🧠 Why did it work? on an outlier, then Save on the ideas you like. Or add your own.',
+    making: 'Nothing in progress. Tap “Start making” on an idea.',
+    done: 'Nothing published yet. Mark an idea ✓ Published when it’s out.',
+  }[stage];
+  return `<div class="screen-head"><div><h1 class="large-title">Ideas</h1>
+      <p class="subtitle">${ideas.length ? `${ideas.length} idea${ideas.length === 1 ? '' : 's'} · ${count('making')} in progress` : 'Your next videos, from what’s working'}</p></div>
+    <button type="button" class="chip-btn" data-action="new-idea">+ New</button></div>
+    <div class="seg" role="group" aria-label="Stage">${STAGES.map(([s, l]) => `<button type="button" data-action="stage" data-value="${s}" class="${stage === s ? 'on' : ''}" aria-pressed="${stage === s}">${l}${count(s) ? ` <span class="count">${count(s)}</span>` : ''}</button>`).join('')}</div>
+    ${list.length ? `<div class="idea-list">${list.map(card).join('')}</div>` : `<div class="empty small-empty"><div class="empty-emoji" aria-hidden="true">💡</div><p>${empty}</p>
+      ${stage === 'todo' ? '<button type="button" class="btn secondary" data-action="new-idea">Add an idea</button>' : ''}</div>`}`;
 }
 
 export function signInView({ step = 'email', email = '', busy = false, error = '' }) {

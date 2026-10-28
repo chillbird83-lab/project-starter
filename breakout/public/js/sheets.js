@@ -1,9 +1,10 @@
-// Sheets: add menu, niches, add channel, video (player + "Why did it work?"), channel, settings, first run.
+// Sheets: add menu, niches, add channel, video (player + "Why did it work?"), idea, channel, settings, first run.
 import { closeSheet, confirmDialog, openSheet, sheetElement, toast } from './overlay.js';
 import { age, compact, scoreLabel } from './rows.js';
 import { engagement, isOutlier } from './score.js';
 import * as store from './store.js';
 import { $, esc, haptic } from './util.js';
+import { IDEA_LIMITS, STAGES, hasIdea, ideaFromAnalysis } from './ideas.js';
 import { LANGUAGES, languageName, videoLanguage } from './lang.js';
 import { sparkline, velocity } from './trend.js';
 import { duration, heat, languagePicker } from './views.js';
@@ -154,8 +155,13 @@ export function openAddChannel(app, { nicheId = app.ui.niche?.length === 36 ? ap
 // Video
 // ---------------------------------------------------------------------------
 
-function analysisHTML(a) {
+const ideaSaveBtn = (v, idea, n) => (hasIdea(store.get().ideas, v.id, idea.title)
+  ? '<span class="muted small saved-mark">✓ Saved</span>'
+  : `<button type="button" class="chip-btn mini" data-save-idea="${n}">Save</button>`);
+
+function analysisHTML(a, v) {
   if (!a) return '';
+  const unsaved = a.ideas.filter((i) => !hasIdea(store.get().ideas, v.id, i.title)).length;
   return `<div class="analysis">
     <p class="a-summary">${esc(a.summary)}</p>
     <span class="pill ${a.confidence === 'high' ? 'pill-ok' : a.confidence === 'medium' ? 'pill-neutral' : 'pill-warn'}">${esc(a.confidence)} confidence</span>
@@ -164,7 +170,8 @@ function analysisHTML(a) {
     ${a.titleFormula ? `<h3 class="mini-title">Title formula</h3><button type="button" class="card formula" data-copy="${esc(a.titleFormula)}">${esc(a.titleFormula)}<small>Tap to copy</small></button>` : ''}
     ${a.thumbnailNotes ? `<h3 class="mini-title">Thumbnail</h3><p class="card pad">${esc(a.thumbnailNotes)}</p>` : ''}
     ${a.audienceReaction ? `<h3 class="mini-title">What viewers reacted to</h3><p class="card pad">${esc(a.audienceReaction)}</p>` : ''}
-    ${a.ideas.length ? `<h3 class="mini-title">Ideas for your channel</h3><div class="card list inset">${a.ideas.map((i) => `<button type="button" class="row idea" data-copy="${esc(i.title)}"><span class="grow"><span class="title">${esc(i.title)}</span><span class="sub wrap">${esc(i.angle)}</span></span><span class="muted small">Copy</span></button>`).join('')}</div>` : ''}
+    ${a.ideas.length ? `<h3 class="mini-title idea-head"><span>Ideas for your channel</span>${unsaved > 1 ? '<button type="button" class="link small" data-save-idea="all">Save all to Ideas</button>' : ''}</h3>
+      <div class="card list inset">${a.ideas.map((i, n) => `<div class="row idea"><button type="button" class="grow idea-copy" data-copy="${esc(i.title)}" aria-label="Copy “${esc(i.title)}”"><span class="title">${esc(i.title)}</span><span class="sub wrap">${esc(i.angle)}</span></button>${ideaSaveBtn(v, i, n)}</div>`).join('')}</div>` : ''}
   </div>`;
 }
 
@@ -198,6 +205,7 @@ export function openVideo(app, id) {
   const pct = (r) => (r == null ? '–' : `${(r * 100).toFixed(r < 0.01 ? 2 : 1)}%`);
   const canAnalyse = app.backend.mode === 'local' || app.backend.config.ai;
   const tracked = !!c || s.channels.some((x) => x.ytChannelId === v.ytChannelId);
+  store.markOpened(id);
   const el = openSheet(`${header('', { cancel: 'Close', submit: '' })}
     <div class="player ${v.isShort ? 'short' : ''}" id="v-player">
       <button type="button" class="hero-thumb" data-play aria-label="Play video">${v.thumb ? `<img src="${esc(v.thumb)}" alt="" referrerpolicy="no-referrer">` : ''}<b class="badge big ${heat(v.score)}">${scoreLabel(v.score)}</b><i class="play" aria-hidden="true">▶</i></button>
@@ -219,7 +227,7 @@ export function openVideo(app, id) {
     ${speedRow(v)}
     ${langRow(v)}
     ${!tracked && v.ytChannelId ? `<button type="button" class="btn secondary" data-track>📺 Track ${esc(channelTitle || 'this channel')}</button>` : ''}
-    <div id="v-analysis">${v.analysis ? analysisHTML(v.analysis) : canAnalyse ? '<button type="button" class="btn primary ai-btn" data-analyse>🧠 Why did it work?</button>' : '<p class="hint">AI analysis isn’t set up on this server yet.</p>'}</div>
+    <div id="v-analysis">${v.analysis ? analysisHTML(v.analysis, v) : canAnalyse ? '<button type="button" class="btn primary ai-btn" data-analyse>🧠 Why did it work?</button>' : '<p class="hint">AI analysis isn’t set up on this server yet.</p>'}</div>
     ${v.analysis ? '<button type="button" class="link small center-link" data-analyse data-force="1">Analyse again</button>' : ''}`, { label: v.title, focus: false });
 
   el.addEventListener('click', async (ev) => {
@@ -229,6 +237,20 @@ export function openVideo(app, id) {
     }
     const cp = ev.target.closest('[data-copy]');
     if (cp) { copy(cp.dataset.copy); return; }
+    const si = ev.target.closest('[data-save-idea]');
+    if (si) {
+      const cur = store.get().videos.find((x) => x.id === id) ?? v;
+      const a = cur.analysis;
+      const picks = si.dataset.saveIdea === 'all' ? a.ideas : [a.ideas[Number(si.dataset.saveIdea)]];
+      si.disabled = true;
+      try {
+        for (const idea of picks.filter((i) => i && !hasIdea(store.get().ideas, cur.id, i.title))) await store.saveIdea(ideaFromAnalysis(cur, idea, a, channelTitle));
+        haptic(12);
+        if (sheetElement() === el) $('#v-analysis', el).innerHTML = analysisHTML(a, cur);
+        toast(picks.length > 1 ? 'Ideas saved to your Ideas board' : 'Saved to your Ideas board', { actionLabel: 'View', onAction: () => { closeSheet(); app.showTab('ideas'); } });
+      } catch (err) { si.disabled = false; toast(err.message); }
+      return;
+    }
     const hl = ev.target.closest('[data-hide-lang]');
     if (hl) {
       const l = hl.dataset.hideLang;
@@ -279,11 +301,88 @@ export function openVideo(app, id) {
       el.querySelector('.center-link')?.remove();
       try {
         const a = await store.analyse(id, an.dataset.force === '1');
-        if (sheetElement() === el) box.innerHTML = analysisHTML(a);
+        if (sheetElement() === el) box.innerHTML = analysisHTML(a, store.get().videos.find((x) => x.id === id) ?? v);
       } catch (err) {
         if (sheetElement() === el) box.innerHTML = `<p class="form-error">${esc(err.message)}</p><button type="button" class="btn primary ai-btn" data-analyse>Try again</button>`;
       }
     }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Idea
+// ---------------------------------------------------------------------------
+
+/** Edit an idea (or add one: `preset` fills the new idea, e.g. from the weekly report). */
+export function openIdea(app, { id, preset = {} } = {}) {
+  const s = store.get();
+  const idea = id ? s.ideas.find((i) => i.id === id) : { status: app.ui.stage === 'done' ? 'todo' : app.ui.stage, ...preset };
+  if (!idea) return;
+  const video = idea.videoId ? s.videos.find((v) => v.id === idea.videoId) : null;
+  const el = openSheet(`<form id="idea-form" novalidate>
+    ${header(id ? 'Idea' : 'New idea', { submit: 'Save' })}
+    <div class="card list inset">
+      <label class="row field"><span class="title">Title</span><input id="idea-title" maxlength="${IDEA_LIMITS.title}" placeholder="Your video title" value="${esc(idea.title ?? '')}" autocomplete="off" ${id ? '' : 'autofocus'}></label>
+      <label class="row field"><span class="title">Stage</span><select id="idea-stage">${STAGES.map(([st, l]) => `<option value="${st}" ${st === idea.status ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </div>
+    <h3 class="mini-title">Angle</h3>
+    <label class="card note"><span class="sr-only">Angle</span><textarea id="idea-angle" rows="2" maxlength="${IDEA_LIMITS.angle}" placeholder="What makes it work">${esc(idea.angle ?? '')}</textarea></label>
+    <h3 class="mini-title">Notes</h3>
+    <label class="card note"><span class="sr-only">Notes</span><textarea id="idea-notes" rows="4" maxlength="${IDEA_LIMITS.notes}" placeholder="Hook, thumbnail, script points…">${esc(idea.notes ?? '')}</textarea></label>
+    ${idea.formula ? `<h3 class="mini-title">Title formula</h3><button type="button" class="card formula" data-copy="${esc(idea.formula)}">${esc(idea.formula)}<small>Tap to copy</small></button>` : ''}
+    ${idea.sourceTitle ? `<h3 class="mini-title">Inspired by</h3>
+      ${video ? `<button type="button" class="card row source-row" data-source><span class="grow"><span class="title">${esc(idea.sourceTitle)}</span><span class="sub">${esc(idea.sourceChannel || '')}${idea.sourceScore ? ` · ${scoreLabel(idea.sourceScore)} typical views` : ''}</span></span><span class="chev" aria-hidden="true">›</span></button>`
+        : idea.sourceYtVideoId ? `<a class="card row source-row" href="${esc(videoURL(idea.sourceYtVideoId))}" target="_blank" rel="noopener"><span class="grow"><span class="title">${esc(idea.sourceTitle)}</span><span class="sub">${esc(idea.sourceChannel || '')} · Open in YouTube</span></span><span class="chev" aria-hidden="true">↗</span></a>`
+          : `<p class="card pad small muted">${esc(idea.sourceTitle)}</p>`}` : ''}
+    <p class="form-error" id="idea-error" role="alert" hidden></p>
+    ${id ? '<button type="button" class="btn secondary" data-copy-title>Copy title</button>' : ''}
+    ${id ? '<button type="button" class="btn danger-text" data-del>Delete idea</button>' : ''}
+  </form>`, { label: id ? idea.title : 'New idea', focus: !id });
+  const err = $('#idea-error', el);
+  $('#idea-form', el).addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = $('#idea-title', el).value.trim();
+    if (!title) { $('#idea-title', el).focus(); return; }
+    const btn = $('button[type="submit"]', el);
+    btn.disabled = true; err.hidden = true;
+    try {
+      const saved = await store.saveIdea({ ...idea, title, angle: $('#idea-angle', el).value, notes: $('#idea-notes', el).value, status: $('#idea-stage', el).value });
+      closeSheet();
+      app.ui.stage = saved.status;
+      app.showTab('ideas');
+      toast(id ? 'Saved' : 'Idea added');
+    } catch (ex) { btn.disabled = false; err.textContent = ex.message; err.hidden = false; }
+  });
+  el.addEventListener('click', async (e) => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { copy(cp.dataset.copy); return; }
+    if (e.target.closest('[data-copy-title]')) { copy($('#idea-title', el).value.trim()); return; }
+    if (e.target.closest('[data-source]')) { openVideo(app, video.id); return; }
+    if (e.target.closest('[data-del]')) {
+      if (!await confirmDialog({ title: 'Delete this idea?', message: idea.title, confirmLabel: 'Delete', destructive: true })) return;
+      try { await store.deleteIdea(id); closeSheet(); toast('Deleted'); } catch (ex) { toast(ex.message); }
+    }
+  });
+}
+
+/** This-device mode: asks for a Gemini key right where it's needed. Resolves once one is saved. */
+export function askGeminiKey(reason) {
+  return new Promise((resolve) => {
+    let saved = false;
+    const el = openSheet(`${header('Gemini key', { submit: '' })}
+      <div class="card key-card">
+        <p class="title">🧠 One free key for the AI parts</p>
+        <p class="sub wrap">${esc(reason)}</p>
+        <ol class="steps"><li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google</li><li>Tap <b>Create API key</b> and copy it</li><li>Paste it here</li></ol>
+        <input id="gk-key" class="key-input" type="password" placeholder="Paste your Gemini key" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn primary" data-save-key>Save</button>
+        <p class="hint">It stays on this device. You can change it later in Settings.</p></div>`, { label: 'Gemini key', onClose: () => resolve(saved) });
+    el.addEventListener('click', async (e) => {
+      if (!e.target.closest('[data-save-key]')) return;
+      const key = $('#gk-key', el).value.trim();
+      if (!key) { $('#gk-key', el).focus(); return; }
+      try { await store.saveSettings({ geminiKey: key }); saved = true; closeSheet(); } catch (err) { toast(err.message); }
+    });
   });
 }
 
@@ -394,6 +493,7 @@ export function openSettings(app) {
     <div class="card list inset">
       ${tgOn ? `<div id="tg-row">${tgRow()}</div>` : '<div class="row"><span class="grow sub">Telegram alerts aren’t set up on this server yet.</span></div>'}
       ${tgOn ? switchRow('set-alerts', 'Send alerts', 'Fresh breakouts from the last 14 days', s.alerts) : ''}
+      ${tgOn ? switchRow('set-weekly', 'Weekly report', 'Mondays: each niche’s top breakouts and the title patterns they share', s.weeklyReport) : ''}
     </div>` : `<h3 class="group-label">Your API keys</h3>
     <div class="card list inset">
       <label class="row field"><span class="title">YouTube key</span><input id="set-yt" type="password" placeholder="Required" value="${esc(s.youtubeKey || '')}" autocomplete="off" spellcheck="false"></label>
@@ -404,6 +504,7 @@ export function openSettings(app) {
 
     <h3 class="group-label">Data</h3>
     <div class="card list inset">
+      ${s.dismissedChannels.length ? `<div class="row" id="dismissed-row"><span class="grow"><span class="title">Hidden suggestions</span><span class="sub">${s.dismissedChannels.length} channel${s.dismissedChannels.length === 1 ? '' : 's'} you said no to</span></span><button type="button" class="link" data-act="undismiss">Show again</button></div>` : ''}
       <button type="button" class="row" data-act="wipe"><span class="grow title red">${cloud ? 'Delete my account and data' : 'Delete everything on this device'}</span></button>
     </div>
     <p class="about">Breakout · YouTube outlier tracker<br>Scores compare views with the channel’s typical views at the same age.</p>`, { label: 'Settings', focus: false });
@@ -428,6 +529,7 @@ export function openSettings(app) {
     showHidden();
   });
   on('#set-alerts', 'change', (e) => save({ alerts: e.target.checked }));
+  on('#set-weekly', 'change', (e) => save({ weeklyReport: e.target.checked }));
   on('#set-yt', 'change', (e) => save({ youtubeKey: e.target.value.trim() }));
   on('#set-gem', 'change', (e) => save({ geminiKey: e.target.value.trim() }));
   on('#set-model', 'change', (e) => save({ geminiModel: e.target.value.trim() }));
@@ -446,6 +548,7 @@ export function openSettings(app) {
         app.watchTelegram(() => { const r = $('#tg-row', el); if (r) r.innerHTML = tgRow(); });
       }
       if (act === 'tg-test') { await b.telegramTest(); toast('Test message sent'); }
+      if (act === 'undismiss') { await store.saveSettings({ dismissedChannels: [] }); $('#dismissed-row', el)?.remove(); toast('Suggestions reset'); }
       if (act === 'tg-unlink') { await b.telegramUnlink(); store.setTelegram({ linked: false }); $('#tg-row', el).innerHTML = tgRow(); }
       if (act === 'wipe') {
         const ok = await confirmDialog({ title: cloud ? 'Delete your account?' : 'Delete everything?', message: 'All channels, videos and analyses are removed for good.', confirmLabel: 'Delete', destructive: true });

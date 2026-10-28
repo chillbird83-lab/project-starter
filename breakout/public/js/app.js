@@ -1,12 +1,18 @@
 import { cloudBackend, loadConfig, localBackend, preferLocal, setPreferLocal } from './backend.js';
 import { closeSheet, confirmDialog, sheetOpen, toast } from './overlay.js';
-import { openAddChannel, openAddMenu, openChannel, openNicheEditor, openNiches, openOnboarding, openSettings, openVideo } from './sheets.js';
+import {
+  askGeminiKey, openAddChannel, openAddMenu, openChannel, openIdea, openNicheEditor, openNiches, openOnboarding, openSettings, openVideo,
+} from './sheets.js';
 import * as store from './store.js';
 import { languageName } from './lang.js';
-import { $, $$, esc } from './util.js';
-import { channelsView, loadingView, outlierList, outliersView, signInView } from './views.js';
+import { interestQuery } from './similar.js';
+import { $, $$, esc, haptic } from './util.js';
+import { videoURL } from './youtube.js';
+import {
+  channelsView, ideasView, loadingView, outlierList, outliersView, reportFor, reportView, signInView, suggestionsFor,
+} from './views.js';
 
-const VIEWS = { outliers: outliersView, channels: channelsView };
+const VIEWS = { outliers: outliersView, report: reportView, ideas: ideasView, channels: channelsView };
 const LOCAL_REFRESH_HOURS = 3;
 /** Niche searches cost ~130 quota units, so they repeat less often than channel checks. */
 const LOCAL_NICHE_HOURS = 12;
@@ -18,6 +24,7 @@ const FEED_KEY = 'breakout.feed';
 const savedFeed = (() => { try { return JSON.parse(localStorage.getItem(FEED_KEY)) || {}; } catch { return {}; } })();
 const ui = {
   tab: 'outliers', niche: 'all', period: 30, kind: 'all', limit: 40, refreshing: false,
+  stage: 'todo', summarising: false, findingSimilar: false,
   sort: ['score', 'rising', 'views', 'new'].includes(savedFeed.sort) ? savedFeed.sort : 'score',
   size: ['any', '10000', '100000', '1000000'].includes(savedFeed.size) ? savedFeed.size : 'any',
 };
@@ -34,6 +41,7 @@ const app = {
     if (ui.tab !== 'outliers') { ui.tab = 'outliers'; enter = true; }
     render();
   },
+  showTab(tab) { setTab(tab, { top: true }); },
   showNiche(id) {
     ui.niche = id;
     ui.limit = 40;
@@ -129,8 +137,8 @@ function render() {
   if (sel && !sheetOpen()) $(sel, view)?.focus({ preventScroll: true });
 }
 
-function setTab(tab) {
-  if (ui.tab === tab) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+function setTab(tab, { top = false } = {}) {
+  if (ui.tab === tab) { if (top) render(); window.scrollTo({ top: 0, behavior: top ? 'auto' : 'smooth' }); return; }
   ui.tab = tab;
   enter = true;
   window.scrollTo(0, 0);
@@ -157,6 +165,18 @@ document.addEventListener('click', (e) => {
     case 'kind': ui.kind = value; render(); break;
     case 'more': ui.limit += 40; $('#outlier-list').innerHTML = outlierList(context()); break;
     case 'refresh': refreshAll(); break;
+    case 'show-niche': app.showNiche(id); break;
+    case 'stage': ui.stage = value; render(); break;
+    case 'new-idea': openIdea(app); break;
+    case 'idea': openIdea(app, { id }); break;
+    case 'idea-move': moveIdea(id, el.dataset.to); break;
+    case 'summarise': summarise(); break;
+    case 'save-report-idea': saveReportIdea(el.dataset.key, el); break;
+    case 'copy': navigator.clipboard?.writeText(value).then(() => toast('Copied'), () => toast('Couldn’t copy on this device.')); break;
+    case 'suggest-open': if (id) openVideo(app, id); else if (el.dataset.video) window.open(videoURL(el.dataset.video), '_blank', 'noopener'); break;
+    case 'track-suggested': trackSuggested(el); break;
+    case 'dismiss-suggested': dismissSuggested(el.dataset.yt); break;
+    case 'find-similar': findSimilar(); break;
     case 'use-local': setPreferLocal(true); location.reload(); break;
     case 'signin-back': signin = { step: 'email', email: signin.email }; render(); break;
     default: break;
@@ -217,6 +237,77 @@ document.addEventListener('visibilitychange', () => {
   render();
   if (app.backend.mode === 'local') maybeLocalRefresh();
 });
+
+async function moveIdea(id, to) {
+  const idea = store.get().ideas.find((i) => i.id === id);
+  if (!idea) return;
+  try {
+    await store.saveIdea({ ...idea, status: to });
+    haptic(10);
+    const label = { making: 'Moved to Making', done: 'Published 🎉', todo: 'Back in To make' }[to];
+    toast(label, { actionLabel: 'Undo', onAction: () => store.saveIdea({ ...idea }).catch((e) => toast(e.message)) });
+  } catch (e) { toast(e.message); }
+}
+
+/** "What do they have in common?": one Gemini call for the whole week. */
+async function summarise() {
+  if (ui.summarising) return;
+  const { backend } = app;
+  if (backend.mode === 'local' && !store.get().settings.geminiKey
+    && !await askGeminiKey('The weekly summary uses Google’s Gemini AI to say what each niche’s breakouts share.')) return;
+  ui.summarising = true;
+  render();
+  try {
+    const s = await store.summariseReport(reportFor(store.get(), Date.now()));
+    toast(Object.keys(s.items ?? {}).length ? 'Summary ready' : 'The AI had nothing to add this week.');
+  } catch (e) { toast(e.message); } finally { ui.summarising = false; render(); }
+}
+
+async function saveReportIdea(key, btn) {
+  const s = store.get();
+  const item = s.reportSummary?.items?.[key];
+  const group = reportFor(s, Date.now()).groups.find((g) => g.key === key);
+  if (!item?.idea) return;
+  btn.disabled = true;
+  try {
+    await store.saveIdea({ title: item.idea, angle: item.pattern, status: 'todo', sourceTitle: `Weekly report · ${group?.name ?? ''}` });
+    toast('Saved to your Ideas board', { actionLabel: 'View', onAction: () => { ui.stage = 'todo'; app.showTab('ideas'); } });
+  } catch (e) { btn.disabled = false; toast(e.message); }
+}
+
+async function trackSuggested(btn) {
+  const yt = btn.dataset.yt;
+  const c = suggestionsFor(store.get()).find((x) => x.ytChannelId === yt);
+  btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    const nicheId = store.get().niches.some((n) => n.id === btn.dataset.niche) ? btn.dataset.niche : null;
+    const r = await store.addChannel(yt, nicheId);
+    toast(`Now tracking ${r.channel.title}`);
+  } catch (e) { btn.disabled = false; btn.textContent = 'Track'; toast(e.message.replace(/^You already track/, `${c?.title ?? 'This channel'}: you already track`)); }
+}
+
+async function dismissSuggested(yt) {
+  const c = suggestionsFor(store.get()).find((x) => x.ytChannelId === yt);
+  try {
+    await store.dismissChannel(yt);
+    toast(`${c?.title ?? 'Channel'} won’t be suggested again`, {
+      actionLabel: 'Undo', onAction: () => store.saveSettings({ dismissedChannels: store.get().settings.dismissedChannels.filter((x) => x !== yt) }).catch(() => {}),
+    });
+  } catch (e) { toast(e.message); }
+}
+
+async function findSimilar() {
+  const q = interestQuery({ videos: store.get().videos, ideas: store.get().ideas });
+  if (!q || ui.findingSimilar) return;
+  ui.findingSimilar = true;
+  render();
+  try {
+    const r = await store.findSimilar(q.query);
+    // Only channels the search added count: ones already suggested from your feed aren't new.
+    const n = suggestionsFor(store.get()).filter((x) => x.source === 'search' && r.channels.some((c) => c.ytChannelId === x.ytChannelId)).length;
+    toast(n ? `Found ${n} more small channel${n === 1 ? '' : 's'} like the videos you open` : 'No new small channels this time. Try again after opening a few more outliers.');
+  } catch (e) { toast(e.message); } finally { ui.findingSimilar = false; render(); }
+}
 
 async function removeNiche(id) {
   const n = store.get().niches.find((x) => x.id === id);

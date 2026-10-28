@@ -37,6 +37,16 @@ It is an installable phone app (PWA) that runs on free tiers:
 
 Tap a video to **play it inside the app** (YouTube's embedded player). A few videos have embedding turned off by their owner; use **Open in YouTube** for those.
 
+## Turning outliers into videos
+
+- **💡 Ideas board:** "Why did it work?" ends with three ideas for your channel. Tap **Save** (or **Save all to Ideas**) and they land on the **Ideas** tab. Each idea keeps the video it came from and its title formula. Move ideas through **To make → Making → Published**, add notes (hook, thumbnail, script points), or add your own with **+ New**.
+- **📊 Weekly report:** the **Weekly** tab shows each niche's breakouts of the last 7 days, best first, and what their titles share.
+  - The free part counts title patterns, e.g. "4 of 6 have a number", "3 of 6 mention money", a question, first person, a time frame. A pattern only counts when most of the breakouts use it, and more often than the niche's other videos do. It also lists the words the titles share, and the title formulas from your analyses.
+  - **✨ What do they have in common?** asks Gemini once for the whole week: one sentence per niche and one video idea, which you can save to the Ideas board.
+  - With Telegram connected, the report arrives **every Monday morning** (from 08:00 UTC), with the AI summary when the server has a Gemini key. Send `/report` to the bot to get it at any time, and turn it off with **Settings → Weekly report**.
+- **📺 Suggested channels:** the **Channels** tab suggests small channels (under 100K subscribers) that you don't track yet, based on the outliers you **open, save, analyse and take ideas from**. Each one says why, e.g. "You opened 3 of their videos · 2 outliers · best 14×". Tap **Track** to follow it closely, or ✕ to never see it again (undo in **Settings → Hidden suggestions**).
+  - **Find more like these** searches YouTube for the words your favourite outliers share and keeps the small channels with a breakout. It works like a niche scan, so it costs about 130 quota units, and the server allows it once every 30 minutes.
+
 ## How outliers are scored
 
 - **Tracking:** for every tracked channel, Breakout reads the latest 50 uploads.
@@ -71,7 +81,7 @@ npm test
 ### 1. Supabase — sign-in and database
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. **SQL Editor** → paste [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
+2. **SQL Editor** → paste [`supabase/schema.sql`](supabase/schema.sql) → **Run**. Run it again after updating Breakout: it only adds what's missing (new tables and columns) and keeps your data.
 3. **Authentication → Emails → Templates**: in *Magic Link* and *Confirm signup*, add the code to the email, for example `<p>Your Breakout code: <b>{{ .Token }}</b></p>`. The app signs in with this code rather than a link, which would open the browser instead of the installed app.
 4. **Project Settings → API keys**: copy the project URL, the anon/publishable key and the service_role/secret key.
 
@@ -142,10 +152,13 @@ phone (PWA)
         ├─ /refresh   re-check now (rate-limited to once every 10 minutes)
         ├─ /niches/scan  search a niche for outliers from any channel (once per 30 minutes)
         ├─ /analyse   thumbnail + stats + top comments + the channel's other titles → Gemini → saved
+        ├─ /report/summary  this week's breakouts → Gemini: what each niche's share (cached 30 minutes)
+        ├─ /similar   "Find more like these": a niche-style search → small channels
         └─ /telegram  link codes, webhook (/start, /stop, "Why did it work?" button)
   cron */15 min → channels due for a check → new breakouts → Telegram
   cron hourly   → one niche due for a search → new breakouts → Telegram
   cron :22/:52  → re-read view counts of recent outliers → "Rising now" → Telegram
+  cron hourly   → Monday reports that are due (4 per run) → Telegram
 ```
 
 | Path | Purpose |
@@ -156,6 +169,9 @@ phone (PWA)
 | `public/js/tracker.js` | One channel check (3 units) |
 | `public/js/trend.js` | View history, views per hour, "rising" rule, re-scoring with fresh stats, sparkline |
 | `public/js/lang.js` | Video language: YouTube's field, else script / common-word detection; the feed filter |
+| `public/js/report.js` | Weekly report: breakouts per niche, shared title patterns and words, the AI summary prompt |
+| `public/js/ideas.js` | Idea board stages, saving ideas from an analysis |
+| `public/js/similar.js` | Suggested channels: interest from opens, saves, analyses and ideas; the "more like these" search |
 | `public/js/discover.js` | Niche scan: search → stats → lifetime-average score → re-check the top channels (≈130 units) |
 | `public/js/backend.js` | Cloud backend (Supabase over plain `fetch` + the Worker) and the own-keys backend (IndexedDB) |
 | `worker/index.js`, `worker/telegram.js` | API, cron and Telegram |

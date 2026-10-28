@@ -1,9 +1,11 @@
 // App state for whoever is signed in, kept in sync with the backend.
 import { LANGUAGES, defaultLanguage } from './lang.js';
 import { DEFAULT_SETTINGS } from './score.js';
+import { cleanDismissed } from './similar.js';
 
 let backend = null;
-let state = { ready: false, niches: [], channels: [], videos: [], settings: { ...DEFAULT_SETTINGS }, telegram: { linked: false } };
+const EMPTY = { niches: [], channels: [], videos: [], ideas: [], similar: null, reportSummary: null, settings: { ...DEFAULT_SETTINGS }, telegram: { linked: false } };
+let state = { ready: false, ...EMPTY };
 const listeners = new Set();
 
 export const get = () => state;
@@ -15,14 +17,14 @@ export async function connect(b) {
   backend = b;
   set({ ready: false });
   const data = await b.load();
-  set({ ready: true, ...data, settings: sanitizeSettings(data.settings) });
+  set({ ready: true, ...EMPTY, ...data, ideas: data.ideas ?? [], settings: sanitizeSettings(data.settings) });
   // Settings from before the language filter: save the default so niche searches use it too.
   if (data.settings.onboarded && !data.settings.language) await saveSettings({}).catch(() => {});
 }
 
 export function disconnect() {
   backend = null;
-  set({ ready: false, niches: [], channels: [], videos: [], settings: { ...DEFAULT_SETTINGS }, telegram: { linked: false } });
+  set({ ready: false, ...EMPTY });
 }
 
 export function sanitizeSettings(s = {}) {
@@ -37,6 +39,8 @@ export function sanitizeSettings(s = {}) {
     language: LANGUAGES.some(([c]) => c === s.language) ? s.language : defaultLanguage(),
     hideMixed: s.hideMixed !== false,
     hideLanguages: [...new Set((Array.isArray(s.hideLanguages) ? s.hideLanguages : []).filter((c) => c !== 'any' && LANGUAGES.some(([x]) => x === c)))],
+    weeklyReport: s.weeklyReport !== false,
+    dismissedChannels: cleanDismissed(s.dismissedChannels),
     ...(backend?.mode === 'local' ? {
       youtubeKey: String(s.youtubeKey ?? '').trim(), geminiKey: String(s.geminiKey ?? '').trim(), geminiModel: String(s.geminiModel ?? '').trim(),
     } : {}),
@@ -128,3 +132,37 @@ export async function deleteChannel(id) {
 }
 
 export const setTelegram = (telegram) => set({ telegram });
+
+/** Counts an open, for "Similar channels". Not worth bothering anyone about if it fails. */
+export async function markOpened(videoId) {
+  const v = state.videos.find((x) => x.id === videoId);
+  if (!v) return;
+  const opens = (v.opens || 0) + 1, openedAt = new Date().toISOString();
+  state = { ...state, videos: state.videos.map((x) => (x.id === videoId ? { ...x, opens, openedAt } : x)) }; // no re-render
+  await backend.markOpened(videoId, opens, openedAt).catch(() => {});
+}
+
+export async function saveIdea(idea) {
+  const i = await backend.saveIdea(idea);
+  set({ ideas: [i, ...state.ideas.filter((x) => x.id !== i.id)] });
+  return i;
+}
+
+export async function deleteIdea(id) {
+  await backend.deleteIdea(id);
+  set({ ideas: state.ideas.filter((i) => i.id !== id) });
+}
+
+export async function summariseReport(report) {
+  const reportSummary = await backend.summariseReport(report);
+  set({ reportSummary });
+  return reportSummary;
+}
+
+export async function findSimilar(query) {
+  const similar = await backend.findSimilar(query);
+  set({ similar });
+  return similar;
+}
+
+export const dismissChannel = (ytChannelId) => saveSettings({ dismissedChannels: [...state.settings.dismissedChannels, ytChannelId] });

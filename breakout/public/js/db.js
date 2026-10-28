@@ -1,15 +1,16 @@
-// Tiny IndexedDB wrapper for "this device only" mode: niches, channels, videos and settings.
+// Tiny IndexedDB wrapper for "this device only" mode: niches, channels, videos, ideas and settings.
 const DB_NAME = 'breakout';
 let dbp = null;
 
 function open() {
   if (!dbp) {
     dbp = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      // Version 2 added the idea board.
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         const db = req.result;
-        for (const name of ['niches', 'channels', 'videos']) db.createObjectStore(name, { keyPath: 'id' });
-        db.createObjectStore('kv');
+        for (const name of ['niches', 'channels', 'videos', 'ideas']) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);

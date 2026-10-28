@@ -251,7 +251,7 @@ button.row:active { background: var(--fill); }
 
 .tabbar { position: fixed; z-index: 30; left: 0; right: 0; bottom: max(10px, var(--safe-bottom)); display: flex; justify-content: center; pointer-events: none; padding: 0 12px; }
 .tabbar-inner {
-  pointer-events: auto; width: min(100%, 320px); display: grid; grid-template-columns: 1fr 64px 1fr; align-items: center;
+  pointer-events: auto; width: min(100%, 420px); display: grid; grid-template-columns: 1fr 1fr 64px 1fr 1fr; align-items: center;
   height: 66px; padding: 0 6px; border-radius: 34px;
   background: var(--glass); -webkit-backdrop-filter: saturate(180%) blur(28px); backdrop-filter: saturate(180%) blur(28px);
   border: 0.5px solid var(--glass-border); box-shadow: var(--shadow-lg);
@@ -491,7 +491,54 @@ a.btn { text-decoration: none; }
 .card.formula small { display: block; font-size: 12px; font-weight: 500; color: var(--label-2); margin-top: 4px; }
 .card.pad { font-size: 15px; line-height: 1.45; }
 .sub.wrap { white-space: normal; }
+.row.idea { gap: 10px; }
 .row.idea .title { font-weight: 600; }
+.idea-copy { text-align: left; }
+.saved-mark { flex: none; color: var(--green-ink); font-weight: 600; }
+.idea-head { display: flex; justify-content: space-between; align-items: center; }
+.idea-head .link { text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 14px; color: var(--blue); }
+
+/* ---------- ideas board ---------- */
+
+.seg .count { display: inline-block; min-width: 20px; margin-left: 4px; padding: 0 6px; border-radius: 10px; background: var(--fill); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.idea-list { display: grid; gap: 12px; }
+.idea-card { padding: 0; overflow: hidden; margin: 0; }
+.idea-main { display: block; width: 100%; padding: 14px 16px 6px; }
+.idea-main .title { font-weight: 600; font-size: 17px; line-height: 1.3; }
+.idea-main .sub { margin-top: 4px; }
+.idea-notes { font-size: 13.5px; }
+.idea-src { display: block; margin-top: 8px; font-size: 12.5px; color: var(--label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.idea-actions { display: flex; justify-content: flex-end; padding: 4px 12px 12px; }
+.source-row { text-decoration: none; color: inherit; margin-bottom: 12px; padding: 12px 16px; }
+
+/* ---------- this week ---------- */
+
+.report-stats { margin: 0 0 12px; padding: 14px 16px; border-top: 0; }
+.ai-note { text-align: center; margin-bottom: 4px; }
+.ai-note .link { color: var(--blue); font-weight: 600; }
+.report-card { margin-bottom: 12px; }
+.report-group .vgrid { margin-bottom: 4px; }
+.ai-pattern { font-weight: 600; margin-bottom: 8px; }
+.ai-idea { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--blue) 9%, transparent); margin-bottom: 12px; }
+.mini-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-2); margin: 4px 0 6px; }
+.patterns { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.patterns li { line-height: 1.35; }
+.patterns .sub { font-size: 13px; }
+.shared-words { margin: 0 0 6px; line-height: 2; }
+.shared-words .word { display: inline-block; padding: 0 9px; border-radius: 10px; background: var(--fill); font-weight: 600; line-height: 24px; }
+.shared-words .word i { font-style: normal; color: var(--label-2); font-weight: 500; }
+.formula-line { display: block; width: 100%; padding: 8px 12px; margin-bottom: 6px; border-radius: 10px; background: var(--fill); font-weight: 600; text-align: left; }
+
+/* ---------- suggested channels ---------- */
+
+.row.suggest { gap: 8px; padding-right: 10px; }
+.suggest-main { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; }
+.suggest-thumb { flex: none; width: 64px; height: 36px; border-radius: 8px; object-fit: cover; background: var(--fill); }
+.avatar.letter { display: grid; place-items: center; font-weight: 700; color: var(--label-2); }
+.icon-btn.mini-x { width: 28px; height: 28px; font-size: 13px; color: var(--label-2); flex: none; }
+.row.add-row[disabled] { opacity: 0.6; cursor: default; }
+.row.add-row .spinner { width: 16px; height: 16px; }
+.group .card.list { margin-bottom: 8px; }
 .key-card { display: grid; gap: 8px; }
 .key-card .steps { margin: 4px 0; padding-left: 20px; font-size: 15px; line-height: 1.5; }
 .key-card a { color: var(--blue); }

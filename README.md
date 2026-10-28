@@ -2,7 +2,7 @@
 
 Free, installable phone apps (PWAs) with no dependencies:
 
-- **[Breakout](breakout/)** (`breakout/`) — YouTube niche & competitor tracker: spots videos that beat their channel's typical views, explains why they worked with Gemini, and sends Telegram alerts. Runs on the YouTube Data API, Supabase and Cloudflare Workers (all free tiers), or with your own API keys alone. Setup guide: [breakout/README.md](breakout/README.md).
+- **[Breakout](breakout/)** (`breakout/`) — YouTube niche & competitor tracker: spots videos that beat their channel's typical views, explains why they worked with Gemini, keeps an idea board, suggests small channels to follow, and sends Telegram alerts and a weekly report. Runs on the YouTube Data API, Supabase and Cloudflare Workers (all free tiers), or with your own API keys alone. Setup guide: [breakout/README.md](breakout/README.md).
 - **[Shoebox](shoebox/)** (`shoebox/`) — receipt scanner for UK sole traders: snap a receipt, AI reads the amount, VAT and category, and it exports your Making Tax Digital quarterly totals. Runs on Gemini Flash, Supabase, Cloudflare R2 + Workers and Resend (all free tiers), or on the phone alone. Setup guide: [shoebox/README.md](shoebox/README.md).
 - **[Lectern](#lectern)** — record university lectures and keep them organised by course (moved to its own repository).
 - **[Budgie](#budgie)** (repo root) — a weekly and long-term budget tracker. No accounts, no server.

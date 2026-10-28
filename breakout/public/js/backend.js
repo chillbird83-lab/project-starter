@@ -6,8 +6,12 @@
 import { analyseVideo } from './analyse.js';
 import * as db from './db.js';
 import { nicheExcludes, nicheQuery, scanNiche } from './discover.js';
-import { rowToChannel, rowToNiche, rowToVideo } from './rows.js';
+import { generateJSON } from './gemini.js';
+import { cleanIdea } from './ideas.js';
+import { normaliseSummary, summaryRequest } from './report.js';
+import { ideaToRow, rowToChannel, rowToIdea, rowToNiche, rowToVideo } from './rows.js';
 import { DEFAULT_SETTINGS } from './score.js';
+import { channelsFromScan } from './similar.js';
 import { refreshChannel } from './tracker.js';
 import { addSnapshot, withStats } from './trend.js';
 import { ytClient } from './youtube.js';
@@ -44,6 +48,7 @@ const profileToSettings = (p) => ({
   ...DEFAULT_SETTINGS, onboarded: true, threshold: Number(p.threshold) || 3, minViews: Number(p.min_views ?? 1000),
   includeShorts: p.include_shorts !== false, alerts: p.alerts !== false, language: p.language || null,
   hideMixed: p.hide_mixed !== false, hideLanguages: p.hide_languages || [],
+  weeklyReport: p.weekly_report !== false, dismissedChannels: p.dismissed_channels || [],
 });
 
 // ---------------------------------------------------------------------------
@@ -122,25 +127,29 @@ export function cloudBackend(config, { onSignedOut } = {}) {
     },
 
     async load() {
-      const [niches, channels, videos, profiles, links] = await Promise.all([
+      const [niches, channels, videos, profiles, links, ideas] = await Promise.all([
         rest('niches?select=id,name,keywords,exclude,scanned_at,created_at&order=created_at.asc'),
         rest('channels?select=*&order=created_at.asc'),
         rest(`videos?select=${VIDEO_COLS}&order=published_at.desc&limit=5000`),
         rest(`profiles?select=*&user_id=eq.${this.user.id}`),
         rest('telegram_links?select=chat_id,linked_at'),
+        rest('ideas?select=*&order=updated_at.desc&limit=1000'),
       ]);
       return {
         niches: niches.map(rowToNiche),
         channels: channels.map(rowToChannel),
         videos: videos.map(rowToVideo),
+        ideas: ideas.map(rowToIdea),
         settings: profiles[0] ? profileToSettings(profiles[0]) : { ...DEFAULT_SETTINGS, onboarded: false },
         telegram: { linked: !!links[0]?.chat_id },
+        similar: profiles[0]?.similar ?? null,
+        reportSummary: profiles[0]?.report_summary ?? null,
       };
     },
     async saveSettings(s) {
       await rest('profiles', {
         method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
-        body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts, language: s.language, hide_mixed: s.hideMixed, hide_languages: s.hideLanguages },
+        body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts, language: s.language, hide_mixed: s.hideMixed, hide_languages: s.hideLanguages, weekly_report: s.weeklyReport, dismissed_channels: s.dismissedChannels },
       });
     },
     async saveNiche({ id, name, keywords = '', exclude = '' }) {
@@ -154,6 +163,19 @@ export function cloudBackend(config, { onSignedOut } = {}) {
     moveChannel: (id, nicheId) => rest(`channels?id=eq.${id}`, { method: 'PATCH', body: { niche_id: nicheId } }),
     deleteChannel: (id) => rest(`channels?id=eq.${id}`, { method: 'DELETE' }),
     setSaved: (id, saved) => rest(`videos?id=eq.${id}`, { method: 'PATCH', body: { saved } }),
+    markOpened: (id, opens, openedAt) => rest(`videos?id=eq.${id}`, { method: 'PATCH', body: { opens, opened_at: openedAt } }),
+
+    async saveIdea(idea) {
+      const body = { ...ideaToRow(cleanIdea(idea)), updated_at: new Date().toISOString() };
+      const [row] = idea.id
+        ? await rest(`ideas?id=eq.${idea.id}`, { method: 'PATCH', body, prefer: 'return=representation' })
+        : await rest('ideas', { method: 'POST', body: { ...body, user_id: this.user.id }, prefer: 'return=representation' });
+      return rowToIdea(row);
+    },
+    deleteIdea: (id) => rest(`ideas?id=eq.${id}`, { method: 'DELETE' }),
+    // The Worker builds the report from the database, so it matches the Monday Telegram message.
+    summariseReport: () => api('report/summary', {}).then((r) => r.summary),
+    findSimilar: (query) => api('similar', { query }).then((r) => r.similar),
 
     addChannel: (input, nicheId) => api('channels', { input, nicheId }),
     refresh: (channelId) => api('refresh', { channelId }),
@@ -207,10 +229,13 @@ export function localBackend(config) {
     config,
     user: null,
     async load() {
-      const [niches, channels, videos, saved] = await Promise.all([db.getAll('niches'), db.getAll('channels'), db.getAll('videos'), db.get('kv', 'settings')]);
+      const [niches, channels, videos, saved, ideas, similar, reportSummary] = await Promise.all([
+        db.getAll('niches'), db.getAll('channels'), db.getAll('videos'), db.get('kv', 'settings'),
+        db.getAll('ideas'), db.get('kv', 'similar'), db.get('kv', 'reportSummary'),
+      ]);
       settings = { ...DEFAULT_SETTINGS, onboarded: false, youtubeKey: '', geminiKey: '', geminiModel: '', ...saved };
       const upgraded = videos.map((v) => ({ ...v, nicheIds: nichesOf(v) }));
-      return { niches, channels, videos: upgraded, settings, telegram: { linked: false } };
+      return { niches, channels, videos: upgraded, ideas, settings, telegram: { linked: false }, similar: similar ?? null, reportSummary: reportSummary ?? null };
     },
     async saveSettings(s) { settings = { ...s }; await db.put('kv', settings, 'settings'); },
     async saveNiche({ id, name, keywords = '', exclude = '' }) {
@@ -269,6 +294,32 @@ export function localBackend(config) {
       for (const v of (await db.getAll('videos')).filter((v) => v.channelId === id)) await db.del('videos', v.id);
     },
     async setSaved(id, saved) { const v = await db.get('videos', id); if (v) await db.put('videos', { ...v, saved }); },
+    async markOpened(id, opens, openedAt) { const v = await db.get('videos', id); if (v) await db.put('videos', { ...v, opens, openedAt }); },
+
+    async saveIdea(idea) {
+      const now = new Date().toISOString();
+      const old = idea.id ? await db.get('ideas', idea.id) : null;
+      const i = { ...cleanIdea(idea), id: idea.id ?? uid(), createdAt: old?.createdAt ?? now, updatedAt: now };
+      await db.put('ideas', i);
+      return i;
+    },
+    deleteIdea: (id) => db.del('ideas', id),
+    /** One Gemini call: what each niche's breakouts share, and an idea for each. */
+    async summariseReport(report) {
+      if (!settings.geminiKey) throw new Error('Add your Gemini API key in Settings to get the AI summary.');
+      const raw = await generateJSON({ apiKey: settings.geminiKey, model: settings.geminiModel || undefined, body: summaryRequest(report) });
+      const summary = normaliseSummary(raw, report);
+      await db.put('kv', summary, 'reportSummary');
+      return summary;
+    },
+    /** Small channels like the videos you open: a niche-style search for `query` (about 130 quota units). */
+    async findSimilar(query) {
+      const tracked = new Set((await db.getAll('channels')).map((c) => c.ytChannelId));
+      const found = await scanNiche(yt(), query, { settings });
+      const similar = { at: new Date().toISOString(), query, channels: channelsFromScan(found, { tracked }) };
+      await db.put('kv', similar, 'similar');
+      return similar;
+    },
 
     async addChannel(input, nicheId) {
       const client = yt();
@@ -318,6 +369,6 @@ export function localBackend(config) {
       await db.put('videos', { ...v, analysis, analysedAt });
       return { analysis, analysedAt };
     },
-    async deleteEverything() { await Promise.all(['niches', 'channels', 'videos', 'kv'].map((s) => db.clear(s))); },
+    async deleteEverything() { await Promise.all(['niches', 'channels', 'videos', 'ideas', 'kv'].map((s) => db.clear(s))); },
   };
 }

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { NICHE_CRON, STATS_CRON, refreshStats, runNicheScan, runScheduled } from '../worker/index.js';
+import worker, { NICHE_CRON, REPORT_CRON, STATS_CRON, refreshStats, runNicheScan, runScheduled, runWeeklyReports } from '../worker/index.js';
 import { webhookSecret } from '../worker/telegram.js';
 import { fakeSupabase } from './fake-supabase.js';
-import { CH, fakeYouTube } from './fake-youtube.js';
+import { CH, OTHER, fakeYouTube } from './fake-youtube.js';
 
 const ALICE = '11111111-1111-4111-8111-111111111111';
 const BOB = '22222222-2222-4222-8222-222222222222';
@@ -39,7 +39,13 @@ function world(seed) {
       telegram.push({ method: url.split('/').pop(), body: JSON.parse(init.body) });
       return Response.json({ ok: true, result: {} });
     }
-    if (url.includes('generativelanguage.googleapis.com')) { gemini++; return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(ANALYSIS) }] } }] }); }
+    if (url.includes('generativelanguage.googleapis.com')) {
+      gemini++;
+      // The weekly summary names each niche's key; anything else is a video analysis.
+      const keys = [...String(init.body).matchAll(/NICHE key=(\S+)/g)].map((m) => m[1]);
+      const answer = keys.length ? { niches: keys.map((key) => ({ key, pattern: 'Cheap meals with an exact price.', idea: 'Feed 6 for £6' })) } : ANALYSIS;
+      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(answer) }] } }] });
+    }
     return yt.fetchImpl(url, init);
   };
   return { sb, yt, telegram, gemini: () => gemini, restore: () => { globalThis.fetch = original; } };
@@ -311,5 +317,103 @@ test('rising now: view counts are re-read and a speeding-up outlier alerts once'
     assert.deepEqual((({ updated, rising }) => ({ updated, rising }))(await refreshStats(env(), { now: NOW + 10 * 6e4 })), { updated: 0, rising: 0 });
     row.updated_at = new Date(NOW - 36e5).toISOString();
     assert.equal((await refreshStats(env(), { now: NOW + 36e5 })).rising, 0);
+  } finally { w.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// Weekly report, AI summary, similar channels
+// ---------------------------------------------------------------------------
+
+const CAROL = '55555555-5555-4555-8555-555555555555';
+const reportSeed = (now) => {
+  const at = (days) => new Date(now - days * 864e5).toISOString();
+  const found = (id, title, score, days = 2) => ({
+    id, user_id: ALICE, yt_video_id: id, yt_channel_id: OTHER, channel_title: 'Tiny Kitchen', niche_ids: [NICHE], title, published_at: at(days),
+    duration_s: 600, views: 40000, score, is_outlier: score >= 3, baseline_kind: 'median', lang: '', snapshots: [], description: '', tags: [],
+  });
+  return {
+    niches: [{ id: NICHE, user_id: ALICE, name: 'budget cooking', keywords: 'budget cooking', exclude: '', created_at: '2026-01-01' }],
+    videos: [found('aaaaaaaaaa1', 'Feed 4 people for £5', 14), found('aaaaaaaaaa2', 'A week of dinners for £20', 6), found('aaaaaaaaaa3', 'Old hit', 30, 20)],
+    profiles: [
+      { user_id: ALICE, threshold: 3, min_views: 1000, include_shorts: true, alerts: true, language: 'any', weekly_report: true, report_sent_at: null },
+      { user_id: BOB, threshold: 3, min_views: 1000, weekly_report: true, report_sent_at: null },
+      { user_id: CAROL, threshold: 3, min_views: 1000, weekly_report: false, report_sent_at: null },
+    ],
+    telegram_links: [{ user_id: ALICE, chat_id: 777 }, { user_id: CAROL, chat_id: 999 }],
+  };
+};
+
+test('weekly report: each niche’s breakouts and what they share, once a week, on Telegram', async () => {
+  const MONDAY = Date.parse('2026-10-26T09:00:00Z');
+  const w = world(reportSeed(MONDAY));
+  try {
+    const tasks = [];
+    await worker.scheduled({ cron: REPORT_CRON, scheduledTime: MONDAY }, env({ APP_URL: 'https://breakout.test' }), { waitUntil: (p) => tasks.push(p) });
+    await Promise.all(tasks);
+    const sent = w.telegram.filter((t) => t.method === 'sendMessage');
+    assert.equal(sent.length, 1, 'Alice only: Bob has no Telegram, Carol turned reports off');
+    assert.equal(sent[0].body.chat_id, 777);
+    const text = sent[0].body.text;
+    assert.match(text, /Your week on Breakout/);
+    assert.match(text, /2 breakouts across 1 niche/);
+    assert.match(text, /budget cooking<\/b> — 2 breakouts/);
+    assert.match(text, /14×<\/b> <a href="https:\/\/www\.youtube\.com\/watch\?v=aaaaaaaaaa1">Feed 4 people for £5<\/a>/);
+    assert.match(text, /What they share:<\/i> 2 of 2 · a number; 2 of 2 · money or price/);
+    assert.match(text, /✨ Cheap meals with an exact price\./);
+    assert.match(text, /Try: <b>Feed 6 for £6<\/b>/);
+    assert.match(text, /href="https:\/\/breakout\.test"/);
+    assert.doesNotMatch(text, /Old hit/);
+    const alice = w.sb.db.profiles.find((p) => p.user_id === ALICE);
+    assert.ok(alice.report_sent_at);
+    assert.equal(alice.report_summary.items[NICHE].idea, 'Feed 6 for £6');
+    assert.ok(w.sb.db.profiles.find((p) => p.user_id === BOB).report_sent_at, 'no Telegram: marked done for the week');
+    assert.equal(w.sb.db.profiles.find((p) => p.user_id === CAROL).report_sent_at, null);
+    // Later the same week: nothing is due. The next Monday: due again.
+    assert.deepEqual(await runWeeklyReports(env(), MONDAY + 2 * 864e5), { sent: 0 });
+    assert.equal((await runWeeklyReports(env(), MONDAY + 7 * 864e5)).sent, 1);
+  } finally { w.restore(); }
+});
+
+test('the AI summary of the week is cached for half an hour', async () => {
+  const w = world(reportSeed(Date.now()));
+  try {
+    assert.equal((await call('/api/report/summary', { token: 'bob.jwt' })).status, 400, 'nothing to summarise');
+    const res = await call('/api/report/summary');
+    const out = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(out));
+    assert.equal(out.summary.items[NICHE].pattern, 'Cheap meals with an exact price.');
+    await call('/api/report/summary');
+    assert.equal(w.gemini(), 1);
+    assert.equal((await call('/api/report/summary', {}, env({ GEMINI_API_KEY: '' }))).status, 503);
+  } finally { w.restore(); }
+});
+
+test('/report in Telegram sends this week’s report now', async () => {
+  const w = world(reportSeed(Date.now()));
+  try {
+    const tasks = [];
+    const e = env();
+    const res = await call('/api/telegram/webhook', {
+      token: null, body: { message: { chat: { id: 777 }, text: '/report' } }, headers: { 'X-Telegram-Bot-Api-Secret-Token': await webhookSecret(e) },
+    }, e, { waitUntil: (p) => tasks.push(p) });
+    assert.equal(res.status, 200);
+    await Promise.all(tasks);
+    const msg = w.telegram.find((t) => t.method === 'sendMessage');
+    assert.match(msg.body.text, /Your week on Breakout/);
+    assert.match(msg.body.text, /href="https:\/\/app\.test"/);
+  } finally { w.restore(); }
+});
+
+test('similar channels: a search for what you open, small channels only, rate-limited', async () => {
+  const w = world();
+  try {
+    assert.equal((await call('/api/similar', { body: { query: ' ' } })).status, 400);
+    const res = await call('/api/similar', { body: { query: 'budget meals' } });
+    const out = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(out));
+    assert.equal(w.yt.calls.find((u) => u.pathname.endsWith('/search')).searchParams.get('q'), 'budget meals');
+    assert.deepEqual(out.similar.channels.map((c) => c.title), ['Tiny Kitchen'], 'Morning Maker has 120K subscribers: not small');
+    assert.equal(w.sb.db.profiles.find((p) => p.user_id === ALICE).similar.query, 'budget meals');
+    assert.equal((await call('/api/similar', { body: { query: 'budget meals' } })).status, 429);
   } finally { w.restore(); }
 });

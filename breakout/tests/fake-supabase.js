@@ -1,7 +1,7 @@
 // An in-memory stand-in for the parts of Supabase's REST API (PostgREST) the Worker uses.
 import { randomUUID } from 'node:crypto';
 
-const KEYS = { niches: ['id'], channels: ['id'], videos: ['id'], profiles: ['user_id'], telegram_links: ['user_id'] };
+const KEYS = { niches: ['id'], channels: ['id'], videos: ['id'], profiles: ['user_id'], telegram_links: ['user_id'], ideas: ['id'] };
 
 function parseFilter(col, expr) {
   let not = false;
@@ -43,7 +43,7 @@ function parseQuery(params) {
 }
 
 export function fakeSupabase(seed = {}) {
-  const db = { niches: [], channels: [], videos: [], profiles: [], telegram_links: [], ...structuredClone(seed) };
+  const db = { niches: [], channels: [], videos: [], profiles: [], telegram_links: [], ideas: [], ...structuredClone(seed) };
   const calls = [];
   const handle = async (url, init = {}) => {
     const u = new URL(url);

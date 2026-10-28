@@ -4,30 +4,41 @@
 //   POST   /api/refresh             { channelId? } re-check now (rate-limited)
 //   POST   /api/niches/scan         { nicheId } find outliers from any channel for a niche's search words
 //   POST   /api/analyse             { videoId, force? } Gemini: why did this video work?
+//   POST   /api/report/summary      Gemini: what each niche's breakouts of the week share
+//   POST   /api/similar             { query } small channels like the videos you open (a niche-style search)
 //   POST   /api/telegram/link       a t.me link that connects the user's Telegram chat
 //   POST   /api/telegram/unlink | /api/telegram/test
 //   POST   /api/telegram/webhook    called by Telegram (/start <code>, /stop, "Why did it work?" buttons)
 //   DELETE /api/account
-// Crons: every 15 minutes re-check the channels that are due; hourly scan one niche that is due.
-// Both send Telegram alerts for new breakouts.
+// Crons: every 15 minutes re-check the channels that are due; hourly scan one niche that is due (both
+// send Telegram alerts for new breakouts); twice an hour re-read view counts for "Rising now"; hourly
+// send the Monday weekly reports that are due, a few at a time.
 import { analyseVideo } from '../public/js/analyse.js';
 import { nicheExcludes, nicheQuery, scanNiche } from '../public/js/discover.js';
-import { DEFAULT_MODEL } from '../public/js/gemini.js';
+import { DEFAULT_MODEL, generateJSON } from '../public/js/gemini.js';
 import {
   channelToRow, discoveryToRow, pseudoChannel, rowToChannel, rowToNiche, rowToVideo, settingsFromProfile, videoToRow,
 } from '../public/js/rows.js';
 import { matchesLanguage } from '../public/js/lang.js';
+import { normaliseSummary, summaryRequest, weekStart, weeklyReport } from '../public/js/report.js';
 import { isOutlier, shouldAlert } from '../public/js/score.js';
+import { channelsFromScan } from '../public/js/similar.js';
 import { addSnapshot, velocity, withStats } from '../public/js/trend.js';
 import { refreshChannel } from '../public/js/tracker.js';
 import { YouTubeError, ytClient } from '../public/js/youtube.js';
-import { alertMessage, analysisMessage, risingMessage, tg, webhookSecret } from './telegram.js';
+import { alertMessage, analysisMessage, reportMessage, risingMessage, tg, webhookSecret } from './telegram.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MANUAL_REFRESH_MINUTES = 10;
 const MANUAL_SCAN_MINUTES = 30;
 export const NICHE_CRON = '7 * * * *';
 export const STATS_CRON = '22,52 * * * *';
+export const REPORT_CRON = '41 * * * *';
+/** Weekly reports sent per hourly run (each is about 6 requests, inside the Workers free-plan limit). */
+const REPORT_BATCH = 4;
+/** An AI summary this fresh is reused instead of asking Gemini again. */
+const SUMMARY_MINUTES = 30;
+const SIMILAR_MINUTES = 30;
 /** Recent candidates whose view counts are re-read per run (1 YouTube unit per 50). */
 const STATS_BATCH = 50;
 const MAX_ALERTS_PER_CHANNEL = 3;
@@ -206,6 +217,74 @@ export async function refreshStats(env, { userId = null, now = Date.now(), setti
   const body = updated.map((u) => ({ rising_alerted_at: rows.find((r) => r.id === u.id).rising_alerted_at ?? null, ...u }));
   const saved = await sb(env, 'videos?on_conflict=id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=representation', body });
   return { updated: saved.length, rising, videos: saved.map(rowToVideo) };
+}
+
+// ---------------------------------------------------------------------------
+// Weekly report
+// ---------------------------------------------------------------------------
+
+const REPORT_VIDEO_COLS = 'id,channel_id,niche_ids,yt_video_id,yt_channel_id,channel_title,title,description,tags,published_at,duration_s,is_short,views,score,is_outlier,baseline_kind,lang,snapshots,analysis';
+
+/** The same report the app shows: last week's breakouts per niche, from the database. */
+export async function buildReport(env, userId, settings, now = Date.now()) {
+  const since = new Date(now - 30 * 864e5).toISOString();
+  const [niches, channels, videos] = await Promise.all([
+    sb(env, `niches?select=*&user_id=eq.${userId}&order=created_at.asc`),
+    sb(env, `channels?select=*&user_id=eq.${userId}`),
+    sb(env, `videos?select=${REPORT_VIDEO_COLS}&user_id=eq.${userId}&published_at=gte.${since}&order=score.desc&limit=1000`),
+  ]);
+  return weeklyReport({ niches: niches.map(rowToNiche), channels: channels.map(rowToChannel), videos: videos.map(rowToVideo), settings, now });
+}
+
+/** Gemini's one-liner per niche. A summary from the last half hour is reused. */
+async function summarise(env, report, profile, now) {
+  if (profile?.report_summary && profile.report_summary_at && now - Date.parse(profile.report_summary_at) < SUMMARY_MINUTES * 6e4) {
+    return { summary: profile.report_summary, fresh: false };
+  }
+  if (!env.GEMINI_API_KEY || !report.total) return { summary: null, fresh: false };
+  const raw = await generateJSON({ apiKey: env.GEMINI_API_KEY, model: env.GEMINI_MODEL || DEFAULT_MODEL, body: summaryRequest(report) });
+  return { summary: normaliseSummary(raw, report, now), fresh: true };
+}
+
+/** Builds and sends one user's report. Returns the profile fields to save. */
+async function sendReport(env, profile, chatId, { now = Date.now(), appUrl = env.APP_URL || '' } = {}) {
+  const report = await buildReport(env, profile.user_id, settingsFromProfile(profile), now);
+  const patch = { report_sent_at: new Date(now).toISOString() };
+  if (!report.groups.length) return { sent: false, patch }; // nothing to report on yet
+  let summary = null;
+  try {
+    const s = await summarise(env, report, profile, now);
+    summary = s.summary;
+    if (s.fresh) Object.assign(patch, { report_summary: summary, report_summary_at: summary.at });
+  } catch (e) { console.error('report summary failed', e.message); }
+  const r = await tg(env, 'sendMessage', { chat_id: chatId, ...reportMessage(report, summary, appUrl) });
+  return { sent: !!r.ok, patch };
+}
+
+/** Hourly cron: reports for people who haven't had this week's yet (from Monday 08:00 UTC). */
+export async function runWeeklyReports(env, now = Date.now()) {
+  if (!cloudReady(env) || !telegramReady(env)) return { sent: 0 };
+  const start = new Date(weekStart(now)).toISOString();
+  const due = await sb(env, `profiles?select=*&weekly_report=eq.true&or=(report_sent_at.is.null,report_sent_at.lt.${start})&order=report_sent_at.asc.nullsfirst&limit=${REPORT_BATCH * 3}`);
+  if (!due.length) return { sent: 0 };
+  const links = await sb(env, `telegram_links?select=user_id,chat_id&user_id=in.(${due.map((p) => p.user_id).join(',')})&chat_id=not.is.null`);
+  const chat = new Map(links.map((l) => [l.user_id, l.chat_id]));
+  const nowIso = new Date(now).toISOString();
+  // People without Telegram are marked done for the week; the app shows them the report instead.
+  const noChat = due.filter((p) => !chat.has(p.user_id)).map((p) => p.user_id);
+  if (noChat.length) await sb(env, `profiles?user_id=in.(${noChat.join(',')})`, { method: 'PATCH', body: { report_sent_at: nowIso } });
+  let sent = 0;
+  for (const p of due.filter((x) => chat.has(x.user_id)).slice(0, REPORT_BATCH)) {
+    let patch = { report_sent_at: nowIso };
+    try {
+      const r = await sendReport(env, p, chat.get(p.user_id), { now });
+      patch = r.patch;
+      if (r.sent) sent++;
+    } catch (e) { console.error('weekly report failed', p.user_id, e.message); }
+    // Marked either way, so one broken report can't hold up the others.
+    await sb(env, `profiles?user_id=eq.${p.user_id}`, { method: 'PATCH', body: patch }).catch(() => {});
+  }
+  return { sent, skipped: noChat.length };
 }
 
 /** Only a user's first MAX_NICHES niches are scanned, to protect the shared quota. */
@@ -389,6 +468,42 @@ async function analyse(request, env, user) {
   try { return json(await runAnalysis(env, loaded)); } catch (e) { return fail(502, e.message); }
 }
 
+async function reportSummary(env, user) {
+  if (!env.GEMINI_API_KEY) return fail(503, 'AI isn’t set up on this server yet.');
+  const profile = await loadProfile(env, user.id);
+  const now = Date.now();
+  const report = await buildReport(env, user.id, settingsFromProfile(profile ?? {}), now);
+  if (!report.total) return fail(400, 'No breakouts in the last 7 days to compare yet.');
+  let s;
+  try { s = await summarise(env, report, profile, now); } catch (e) { return fail(502, e.message); }
+  if (s.fresh) {
+    await sb(env, 'profiles?on_conflict=user_id', {
+      method: 'POST', prefer: 'resolution=merge-duplicates', body: { user_id: user.id, report_summary: s.summary, report_summary_at: s.summary.at },
+    });
+  }
+  return json({ summary: s.summary });
+}
+
+/** "Find more like these": a niche-style search for the words the videos you open share. */
+async function similar(request, env, user) {
+  const body = await request.json().catch(() => ({}));
+  const query = String(body.query ?? '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  if (query.length < 2) return fail(400, 'Open a few outliers first, so Breakout knows what you like.');
+  const profile = await loadProfile(env, user.id);
+  const now = Date.now();
+  if (profile?.similar_at && now - Date.parse(profile.similar_at) < SIMILAR_MINUTES * 6e4) {
+    return fail(429, `Breakout looked for similar channels a few minutes ago. Searches use a lot of YouTube quota, so try again in ${SIMILAR_MINUTES} minutes.`);
+  }
+  const tracked = new Set((await sb(env, `channels?select=yt_channel_id&user_id=eq.${user.id}`)).map((c) => c.yt_channel_id));
+  let found;
+  try { found = await scanNiche(ytClient(env.YOUTUBE_API_KEY), query, { now, settings: settingsFromProfile(profile ?? {}) }); } catch (e) {
+    return fail(e instanceof YouTubeError ? 503 : 502, e.message);
+  }
+  const result = { at: new Date(now).toISOString(), query, channels: channelsFromScan(found, { tracked }) };
+  await sb(env, 'profiles?on_conflict=user_id', { method: 'POST', prefer: 'resolution=merge-duplicates', body: { user_id: user.id, similar: result, similar_at: result.at } });
+  return json({ similar: result });
+}
+
 async function telegramLink(env, user) {
   const code = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
   await sb(env, 'telegram_links?on_conflict=user_id', {
@@ -411,9 +526,22 @@ async function telegramWebhook(request, env, ctx) {
       const [link] = await sb(env, `telegram_links?select=user_id&link_code=eq.${arg}&link_created_at=gte.${since}`);
       if (link) {
         await sb(env, `telegram_links?user_id=eq.${link.user_id}`, { method: 'PATCH', body: { chat_id: chatId, link_code: null, linked_at: new Date().toISOString() } });
-        await tg(env, 'sendMessage', { chat_id: chatId, text: '✅ Connected to Breakout. You’ll get a message here whenever a channel you track has a breakout video.\n\nSend /stop to pause alerts.' });
+        await tg(env, 'sendMessage', { chat_id: chatId, text: '✅ Connected to Breakout. You’ll get a message here whenever a video in your niches breaks out, and a report every Monday.\n\nSend /report for this week’s report now, or /stop to pause alerts.' });
       } else {
         await tg(env, 'sendMessage', { chat_id: chatId, text: 'That link has expired. In Breakout open Settings → Connect Telegram to get a new one.' });
+      }
+    } else if (cmd === '/report') {
+      const [link] = await sb(env, `telegram_links?select=user_id&chat_id=eq.${chatId}`);
+      if (!link) {
+        await tg(env, 'sendMessage', { chat_id: chatId, text: 'This chat isn’t connected to Breakout.' });
+      } else {
+        const origin = new URL(request.url).origin;
+        ctx.waitUntil((async () => {
+          const profile = (await loadProfile(env, link.user_id)) ?? { user_id: link.user_id };
+          const r = await sendReport(env, profile, chatId, { appUrl: env.APP_URL || origin });
+          if (r.patch.report_summary) await sb(env, `profiles?user_id=eq.${link.user_id}`, { method: 'PATCH', body: { report_summary: r.patch.report_summary, report_summary_at: r.patch.report_summary_at } });
+          if (!r.sent) await tg(env, 'sendMessage', { chat_id: chatId, text: 'Add a niche or track a channel in Breakout first, then your report will show up here.' });
+        })().catch((e) => console.error('report command failed', e.message)));
       }
     } else if (cmd === '/stop') {
       const [link] = await sb(env, `telegram_links?select=user_id&chat_id=eq.${chatId}`);
@@ -468,6 +596,8 @@ async function route(request, env, ctx, url) {
   if (method === 'POST' && pathname === '/api/refresh') return refresh(request, env, user);
   if (method === 'POST' && pathname === '/api/analyse') return analyse(request, env, user);
   if (method === 'POST' && pathname === '/api/niches/scan') return scanNicheNow(request, env, user);
+  if (method === 'POST' && pathname === '/api/report/summary') return reportSummary(env, user);
+  if (method === 'POST' && pathname === '/api/similar') return similar(request, env, user);
   if (pathname.startsWith('/api/telegram/') && !telegramReady(env)) return fail(503, 'Telegram isn’t set up on this server.');
   if (method === 'POST' && pathname === '/api/telegram/link') return telegramLink(env, user);
   if (method === 'POST' && pathname === '/api/telegram/unlink') {
@@ -499,7 +629,8 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    const job = event.cron === NICHE_CRON ? runNicheScan : event.cron === STATS_CRON ? (e, t) => refreshStats(e, { now: t }) : runScheduled;
+    const job = event.cron === NICHE_CRON ? runNicheScan : event.cron === STATS_CRON ? (e, t) => refreshStats(e, { now: t })
+      : event.cron === REPORT_CRON ? runWeeklyReports : runScheduled;
     ctx.waitUntil(job(env, event.scheduledTime).then((r) => console.log('cron', event.cron, JSON.stringify(r))));
   },
 };

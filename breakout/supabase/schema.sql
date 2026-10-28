@@ -65,6 +65,8 @@ create table if not exists public.videos (
   analysis     jsonb,
   analysed_at  timestamptz,
   saved        boolean not null default false,
+  opens        integer not null default 0,  -- times opened in the app, for "Similar channels"
+  opened_at    timestamptz,
   updated_at   timestamptz not null default now(),
   unique (user_id, yt_video_id)
 );
@@ -91,10 +93,9 @@ alter table public.videos add column if not exists baseline_kind text not null d
 alter table public.videos add column if not exists lang text not null default '';
 alter table public.videos add column if not exists snapshots jsonb not null default '[]';
 alter table public.videos add column if not exists rising_alerted_at timestamptz;
+alter table public.videos add column if not exists opens integer not null default 0;
+alter table public.videos add column if not exists opened_at timestamptz;
 create index if not exists videos_stats_due on public.videos (updated_at) where score >= 1.5;
-alter table public.profiles add column if not exists language text not null default 'any';
-alter table public.profiles add column if not exists hide_mixed boolean not null default true;
-alter table public.profiles add column if not exists hide_languages text[] not null default '{}';
 
 create table if not exists public.profiles (
   user_id         uuid primary key default auth.uid() references auth.users (id) on delete cascade,
@@ -106,9 +107,48 @@ create table if not exists public.profiles (
   language        text not null default 'any',  -- 'any' or a 2-letter code; favours and filters that language
   hide_mixed      boolean not null default true, -- hide titles mixing in another alphabet
   hide_languages  text[] not null default '{}',  -- never show these languages
+  weekly_report   boolean not null default true, -- Monday Telegram report
+  report_sent_at  timestamptz,
+  report_summary  jsonb,                          -- the latest AI "what they share" per niche
+  report_summary_at timestamptz,
+  dismissed_channels text[] not null default '{}', -- suggested channels the user said no to
+  similar         jsonb,                          -- the latest "Find more like these" results
+  similar_at      timestamptz,
   last_refresh_at timestamptz,
   updated_at      timestamptz not null default now()
 );
+
+-- Upgrading an older database (these columns came later):
+alter table public.profiles add column if not exists language text not null default 'any';
+alter table public.profiles add column if not exists hide_mixed boolean not null default true;
+alter table public.profiles add column if not exists hide_languages text[] not null default '{}';
+alter table public.profiles add column if not exists weekly_report boolean not null default true;
+alter table public.profiles add column if not exists report_sent_at timestamptz;
+alter table public.profiles add column if not exists report_summary jsonb;
+alter table public.profiles add column if not exists report_summary_at timestamptz;
+alter table public.profiles add column if not exists dismissed_channels text[] not null default '{}';
+alter table public.profiles add column if not exists similar jsonb;
+alter table public.profiles add column if not exists similar_at timestamptz;
+create index if not exists profiles_report_due on public.profiles (report_sent_at nulls first) where weekly_report;
+
+-- Idea board: ideas saved from analyses (or typed in), from "To make" to "Published".
+create table if not exists public.ideas (
+  id                 uuid primary key default gen_random_uuid(),
+  user_id            uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  title              text not null check (char_length(title) between 1 and 200),
+  angle              text not null default '' check (char_length(angle) <= 600),
+  notes              text not null default '' check (char_length(notes) <= 2000),
+  formula            text not null default '' check (char_length(formula) <= 200),
+  status             text not null default 'todo' check (status in ('todo', 'making', 'done')),
+  video_id           uuid references public.videos (id) on delete set null,
+  source_yt_video_id text not null default '' check (char_length(source_yt_video_id) <= 20),
+  source_title       text not null default '' check (char_length(source_title) <= 300),
+  source_channel     text not null default '' check (char_length(source_channel) <= 200),
+  source_score       real,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+create index if not exists ideas_user on public.ideas (user_id, updated_at desc);
 
 -- Telegram chat links are written only by the Worker (after the user taps the bot link).
 create table if not exists public.telegram_links (
@@ -134,6 +174,11 @@ alter table public.channels enable row level security;
 alter table public.videos enable row level security;
 alter table public.profiles enable row level security;
 alter table public.telegram_links enable row level security;
+alter table public.ideas enable row level security;
+
+drop policy if exists "own ideas" on public.ideas;
+create policy "own ideas" on public.ideas for all to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
 drop policy if exists "own niches" on public.niches;
 create policy "own niches" on public.niches for all to authenticated
@@ -163,8 +208,8 @@ create policy "own profile" on public.profiles for all to authenticated
 drop policy if exists "read own telegram link" on public.telegram_links;
 create policy "read own telegram link" on public.telegram_links for select to authenticated using (user_id = (select auth.uid()));
 
--- Only the "saved" flag of a video and the niche of a channel are editable from the app.
+-- Only a video's "saved" flag and open count, and a channel's niche, are editable from the app.
 revoke update on public.videos from authenticated;
-grant update (saved) on public.videos to authenticated;
+grant update (saved, opens, opened_at) on public.videos to authenticated;
 revoke update on public.channels from authenticated;
 grant update (niche_id) on public.channels to authenticated;
