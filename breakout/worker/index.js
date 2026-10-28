@@ -504,7 +504,19 @@ async function similar(request, env, user) {
   return json({ similar: result });
 }
 
-async function telegramLink(env, user) {
+/**
+ * Points the bot at this Worker (and lists its commands). Done whenever someone starts connecting, so a
+ * new bot needs no separate setup step; both calls are idempotent.
+ */
+async function ensureWebhook(env, origin) {
+  const url = `${(env.APP_URL || origin).replace(/\/+$/, '')}/api/telegram/webhook`;
+  const r = await tg(env, 'setWebhook', { url, secret_token: await webhookSecret(env), allowed_updates: ['message', 'callback_query'] });
+  await tg(env, 'setMyCommands', { commands: [{ command: 'report', description: 'This week’s report' }, { command: 'stop', description: 'Pause alerts' }] });
+  return r.ok;
+}
+
+async function telegramLink(env, user, origin) {
+  if (!(await ensureWebhook(env, origin))) return fail(502, 'Telegram didn’t accept the bot token. Check TELEGRAM_BOT_TOKEN.');
   const code = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
   await sb(env, 'telegram_links?on_conflict=user_id', {
     method: 'POST', prefer: 'resolution=merge-duplicates',
@@ -599,7 +611,7 @@ async function route(request, env, ctx, url) {
   if (method === 'POST' && pathname === '/api/report/summary') return reportSummary(env, user);
   if (method === 'POST' && pathname === '/api/similar') return similar(request, env, user);
   if (pathname.startsWith('/api/telegram/') && !telegramReady(env)) return fail(503, 'Telegram isn’t set up on this server.');
-  if (method === 'POST' && pathname === '/api/telegram/link') return telegramLink(env, user);
+  if (method === 'POST' && pathname === '/api/telegram/link') return telegramLink(env, user, url.origin);
   if (method === 'POST' && pathname === '/api/telegram/unlink') {
     await sb(env, `telegram_links?user_id=eq.${user.id}`, { method: 'PATCH', body: { chat_id: null, linked_at: null } });
     return json({ ok: true });

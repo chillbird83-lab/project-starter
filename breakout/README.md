@@ -118,6 +118,10 @@ In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` → pick
 
 From your own computer instead: put the values in `wrangler.toml` `[vars]`, then run `npx wrangler secret put …` for each secret and `npx wrangler deploy`.
 
+Already deployed? Add the same names in the Cloudflare dashboard instead: **Workers & Pages → breakout → Settings → Variables and Secrets → Add**. Use type **Text** for `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `TELEGRAM_BOT_USERNAME`, and **Secret** for the keys and the bot token.
+
+You don't need to register the Telegram webhook yourself: the first time someone taps **Connect Telegram**, the Worker points the bot at itself.
+
 | Without… | What happens |
 | --- | --- |
 | `YOUTUBE_API_KEY` or the Supabase settings | The app offers only the own-keys mode. |

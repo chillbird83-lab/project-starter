@@ -149,6 +149,10 @@ test('Telegram: linking, secret check and the "Why did it work?" button', async 
     const { url } = await (await call('/api/telegram/link', { body: {} })).json();
     const code = url.split('start=')[1];
     assert.match(url, /^https:\/\/t\.me\/BreakoutBot\?start=[0-9a-f]{32}$/);
+    // Connecting points the bot at this Worker first, with the secret Telegram must send back.
+    const set = w.telegram.find((t) => t.method === 'setWebhook');
+    assert.equal(set.body.url, 'https://app.test/api/telegram/webhook');
+    assert.equal(set.body.secret_token, secret);
     await hook({ message: { text: `/start ${code}`, chat: { id: 555 } } });
     assert.equal(w.sb.db.telegram_links[0].chat_id, 555);
     assert.equal(w.sb.db.telegram_links[0].link_code, null);
