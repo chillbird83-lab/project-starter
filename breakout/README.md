@@ -23,6 +23,8 @@ It is an installable phone app (PWA) that runs on free tiers:
   - Each niche is searched again every 12 hours, or when you tap refresh (at most once an hour).
 - **Tracked channels:** follow specific competitors closely. They're checked every 4 hours, at 3 units each. From any outlier, tap **Track this channel**.
 
+**Language:** pick one with 🌐 on the Outliers screen or in Settings (it starts as your browser's language). Niche searches ask YouTube for that language first (`relevanceLanguage`). The feed hides videos that are clearly in another language: it uses the creator's own language setting when there is one, otherwise it reads the writing system (Cyrillic, Arabic, Japanese…) or common words (English, Spanish, German…) in the title and description. Videos it can't place stay visible. Changing the language searches your niches again.
+
 Tap a video to **play it inside the app** (YouTube's embedded player). A few videos have embedding turned off by their owner; use **Open in YouTube** for those.
 
 ## How outliers are scored
@@ -141,6 +143,7 @@ phone (PWA)
 | `public/js/youtube.js` | YouTube client: parses any channel/video link, quota-aware calls, friendly errors |
 | `public/js/analyse.js` | Gemini prompt, response schema and clean-up for "Why did it work?" |
 | `public/js/tracker.js` | One channel check (3 units) |
+| `public/js/lang.js` | Video language: YouTube's field, else script / common-word detection; the feed filter |
 | `public/js/discover.js` | Niche scan: search → stats → lifetime-average score → re-check the top channels (≈122 units) |
 | `public/js/backend.js` | Cloud backend (Supabase over plain `fetch` + the Worker) and the own-keys backend (IndexedDB) |
 | `worker/index.js`, `worker/telegram.js` | API, cron and Telegram |

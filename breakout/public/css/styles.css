@@ -418,6 +418,10 @@ body.signed-out #app { padding-top: calc(var(--safe-top) + 28px); padding-bottom
 .chips.scroll .chip { flex: none; padding: 0 14px; background: var(--card); box-shadow: var(--shadow); }
 .chips.scroll .chip.on { background: var(--label); color: var(--bg); border-color: transparent; }
 .icon-btn.spinning svg { animation: spin 0.9s linear infinite; }
+.head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.lang-pick { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 4px 0 12px; border-radius: 18px; background: var(--fill); font-size: 15px; }
+.lang-pick select { border: 0; background: none; color: var(--blue); font-weight: 600; font-size: 15px; outline: none; max-width: 112px; -webkit-appearance: none; appearance: none; padding: 0 8px 0 0; cursor: pointer; }
+.lang-pick:focus-within { outline: 3px solid color-mix(in srgb, var(--blue) 45%, transparent); }
 .niche-bar { display: flex; align-items: center; gap: 8px; margin: -2px 2px 14px; }
 .niche-bar .sub { margin: 0; }
 .chip-btn.danger { color: var(--red-ink); }

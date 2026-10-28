@@ -4,7 +4,7 @@ import { age, compact, scoreLabel } from './rows.js';
 import { engagement, isOutlier } from './score.js';
 import * as store from './store.js';
 import { $, esc, haptic } from './util.js';
-import { duration, heat } from './views.js';
+import { duration, heat, languagePicker } from './views.js';
 import { channelURL, videoURL } from './youtube.js';
 
 const header = (title, { cancel = 'Cancel', submit = 'Save' } = {}) =>
@@ -346,7 +346,9 @@ export function openSettings(app) {
       <label class="row field"><span class="title">At least</span><select id="set-threshold">${[...new Set([...THRESHOLDS, s.threshold])].sort((x, y) => x - y).map((t) => `<option value="${t}" ${t === s.threshold ? 'selected' : ''}>${t}× typical views</option>`).join('')}</select></label>
       <label class="row field"><span class="title">And at least</span><select id="set-min">${[...new Set([...MIN_VIEWS, s.minViews])].sort((x, y) => x - y).map((m) => `<option value="${m}" ${m === s.minViews ? 'selected' : ''}>${m ? `${compact(m)} views` : 'any views'}</option>`).join('')}</select></label>
       ${switchRow('set-shorts', 'Include Shorts', 'Shorts are compared with the channel’s other Shorts', s.includeShorts)}
+      <div class="row field"><span class="title">Language</span><span class="grow"></span>${languagePicker(s.language, 'set-language')}</div>
     </div>
+    <p class="hint">Niche searches favour this language, and videos clearly in another language are hidden.</p>
 
     ${cloud ? `<h3 class="group-label">Alerts</h3>
     <div class="card list inset">

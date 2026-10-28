@@ -1,6 +1,7 @@
 // Screens: Outliers feed, Channels, sign-in.
 import { age, compact, scoreLabel } from './rows.js';
 import { DAY, isOutlier } from './score.js';
+import { LANGUAGES, languageName, matchesLanguage } from './lang.js';
 import { esc } from './util.js';
 
 export const PERIODS = [[7, '7 days'], [30, '30 days'], [90, '90 days'], [0, 'All']];
@@ -43,7 +44,8 @@ export function outlierList(ctx) {
   const list = videos.filter((v) => visible(v) && inNiche(v)
     && (f.niche === 'saved' ? v.saved : isOutlier(v, v.score, settings))
     && (!f.period || ctx.now - Date.parse(v.publishedAt) <= f.period * DAY)
-    && (f.kind === 'all' || (f.kind === 'short') === !!v.isShort))
+    && (f.kind === 'all' || (f.kind === 'short') === !!v.isShort)
+    && matchesLanguage(v, settings.language))
     .sort((a, b) => b.score - a.score);
   if (!list.length) {
     if (!channels.length && !scanning(ctx.state).length) {
@@ -54,11 +56,14 @@ export function outlierList(ctx) {
     }
     return `<div class="empty small-empty"><div class="empty-emoji" aria-hidden="true">${f.niche === 'saved' ? '☆' : '🔭'}</div>
       <h3>${f.niche === 'saved' ? 'Nothing saved yet' : 'No outliers here'}</h3>
-      <p>${f.niche === 'saved' ? 'Tap ☆ on a video to keep it here.' : `Nothing beat ${scoreLabel(settings.threshold)} typical views in this view. Try a longer period or a lower threshold in Settings.`}</p></div>`;
+      <p>${f.niche === 'saved' ? 'Tap ☆ on a video to keep it here.' : `Nothing${settings.language !== 'any' ? ` in ${esc(languageName(settings.language))}` : ''} beat ${scoreLabel(settings.threshold)} typical views in this view. Try a longer period, another language, or a lower threshold in Settings.`}</p></div>`;
   }
   return `<div class="vgrid">${list.slice(0, f.limit).map((v) => videoCard(v, channelTitleOf(v, byId), ctx.now)).join('')}</div>
     ${list.length > f.limit ? '<button type="button" class="btn secondary" data-action="more">Show more</button>' : ''}`;
 }
+
+export const languagePicker = (current, id = 'lang-filter') => `<label class="lang-pick"><span class="sr-only">Language</span><span aria-hidden="true">🌐</span>
+  <select id="${id}" data-action="language">${LANGUAGES.map(([c, n]) => `<option value="${c}" ${c === current ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
 
 /** Shown when one niche is selected: when it was searched, and ways to edit or remove it. */
 function nicheBar(ctx) {
@@ -80,8 +85,8 @@ export function outliersView(ctx) {
   const anything = sources.length > 0;
   return `<div class="screen-head"><div><h1 class="large-title">Outliers</h1>
       <p class="subtitle">${anything ? `${sources.join(' · ')} · ${lastChecked(ctx.state, ctx.now)}` : 'Videos beating their channel’s normal'}</p></div>
-    ${anything ? `<button type="button" class="icon-btn ${ctx.ui.refreshing ? 'spinning' : ''}" data-action="refresh" aria-label="Check channels now" ${ctx.ui.refreshing ? 'disabled' : ''}>
-      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>` : ''}</div>
+    <div class="head-actions">${anything ? languagePicker(settings.language) : ''}${anything ? `<button type="button" class="icon-btn ${ctx.ui.refreshing ? 'spinning' : ''}" data-action="refresh" aria-label="Check channels now" ${ctx.ui.refreshing ? 'disabled' : ''}>
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>` : ''}</div></div>
     ${niches.length || channels.length ? `<div class="chips scroll" role="group" aria-label="Niche">${chips.map(([id, name]) => `<button type="button" class="chip ${f.niche === id ? 'on' : ''}" data-action="niche" data-value="${esc(id)}" aria-pressed="${f.niche === id}">${esc(name)}</button>`).join('')}</div>
     <div class="seg" role="group" aria-label="Published">${PERIODS.map(([d, l]) => `<button type="button" data-action="period" data-value="${d}" class="${f.period === d ? 'on' : ''}" aria-pressed="${f.period === d}">${l}</button>`).join('')}</div>
     ${settings.includeShorts ? `<div class="seg" role="group" aria-label="Type">${[['all', 'All'], ['long', 'Long-form'], ['short', 'Shorts']].map(([k, l]) => `<button type="button" data-action="kind" data-value="${k}" class="${f.kind === k ? 'on' : ''}" aria-pressed="${f.kind === k}">${l}</button>`).join('')}</div>` : ''}` : ''}

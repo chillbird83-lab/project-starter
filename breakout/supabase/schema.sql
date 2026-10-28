@@ -44,6 +44,7 @@ create table if not exists public.videos (
   channel_subs bigint,
   baseline     bigint not null default 0,
   baseline_kind text not null default 'median' check (baseline_kind in ('median', 'average')),
+  lang         text not null default '',  -- YouTube's audio/default language, if the creator set one
   title        text not null default '',
   description  text not null default '',
   tags         text[] not null default '{}',
@@ -82,6 +83,8 @@ alter table public.videos add column if not exists channel_title text not null d
 alter table public.videos add column if not exists channel_subs bigint;
 alter table public.videos add column if not exists baseline bigint not null default 0;
 alter table public.videos add column if not exists baseline_kind text not null default 'median';
+alter table public.videos add column if not exists lang text not null default '';
+alter table public.profiles add column if not exists language text not null default 'any';
 
 create table if not exists public.profiles (
   user_id         uuid primary key default auth.uid() references auth.users (id) on delete cascade,
@@ -90,6 +93,7 @@ create table if not exists public.profiles (
   min_views       integer not null default 1000 check (min_views >= 0),
   include_shorts  boolean not null default true,
   alerts          boolean not null default true,
+  language        text not null default 'any',  -- 'any' or a 2-letter code; favours and filters that language
   last_refresh_at timestamptz,
   updated_at      timestamptz not null default now()
 );

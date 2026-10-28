@@ -41,7 +41,7 @@ export async function loadConfig() {
 
 const profileToSettings = (p) => ({
   ...DEFAULT_SETTINGS, onboarded: true, threshold: Number(p.threshold) || 3, minViews: Number(p.min_views ?? 1000),
-  includeShorts: p.include_shorts !== false, alerts: p.alerts !== false,
+  includeShorts: p.include_shorts !== false, alerts: p.alerts !== false, language: p.language || null,
 });
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
   const api = (path, body, method = 'POST') =>
     call(`api/${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then((r) => r.json());
 
-  const VIDEO_COLS = 'id,channel_id,niche_ids,source,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
+  const VIDEO_COLS = 'id,channel_id,niche_ids,source,lang,yt_video_id,yt_channel_id,channel_title,channel_subs,baseline,baseline_kind,title,thumb,published_at,duration_s,is_short,views,likes,comments,score,is_outlier,alerted_at,analysis,analysed_at,saved,tags,description,updated_at';
 
   return {
     mode: 'cloud',
@@ -138,7 +138,7 @@ export function cloudBackend(config, { onSignedOut } = {}) {
     async saveSettings(s) {
       await rest('profiles', {
         method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
-        body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts },
+        body: { user_id: this.user.id, email: this.user.email, threshold: s.threshold, min_views: s.minViews, include_shorts: s.includeShorts, alerts: s.alerts, language: s.language },
       });
     },
     async saveNiche({ id, name, keywords = '' }) {

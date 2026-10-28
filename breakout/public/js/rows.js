@@ -17,7 +17,7 @@ export const videoToRow = (v) => ({
   yt_video_id: v.ytVideoId, title: v.title, description: v.description || '', tags: v.tags || [], thumb: v.thumb || '',
   published_at: v.publishedAt, duration_s: v.durationS || 0, is_short: !!v.isShort, views: v.views || 0,
   likes: v.likes ?? null, comments: v.comments ?? null, score: v.score || 0, is_outlier: !!v.isOutlier,
-  yt_channel_id: v.ytChannelId || '',
+  yt_channel_id: v.ytChannelId || '', lang: v.lang || '',
 });
 
 /** A video found by a niche scan (not from a tracked channel). */
@@ -33,7 +33,7 @@ export const rowToVideo = (r) => ({
   score: Number(r.score) || 0, isOutlier: r.is_outlier, alertedAt: r.alerted_at ?? null,
   nicheIds: Array.isArray(r.niche_ids) ? r.niche_ids : [], ytChannelId: r.yt_channel_id || '', channelTitle: r.channel_title || '',
   channelSubs: r.channel_subs == null ? null : Number(r.channel_subs), baseline: Number(r.baseline) || 0,
-  baselineKind: r.baseline_kind || 'median', source: r.source || 'channel',
+  baselineKind: r.baseline_kind || 'median', source: r.source || 'channel', lang: r.lang || '',
   analysis: r.analysis ?? null, analysedAt: r.analysed_at ?? null, saved: !!r.saved, updatedAt: r.updated_at,
 });
 
@@ -46,7 +46,7 @@ export const pseudoChannel = (v) => ({
 
 export const settingsFromProfile = (p = {}) => ({
   threshold: Number(p.threshold) || 3, minViews: Number(p.min_views ?? 1000),
-  includeShorts: p.include_shorts !== false, alerts: p.alerts !== false,
+  includeShorts: p.include_shorts !== false, alerts: p.alerts !== false, language: p.language || 'any',
 });
 
 /** 950 → "950", 12750 → "12.8K", 1234567 → "1.2M" */

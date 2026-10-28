@@ -19,7 +19,7 @@ export function nicheQuery(niche) {
 
 export async function scanNiche(yt, query, { now = Date.now(), settings = DEFAULT_SETTINGS, days = NICHE_DAYS, refineTop = REFINE_TOP } = {}) {
   if (!query) return [];
-  const ids = await yt.searchVideos(query, { publishedAfter: new Date(now - days * DAY).toISOString(), order: 'viewCount', max: 50 });
+  const ids = await yt.searchVideos(query, { publishedAfter: new Date(now - days * DAY).toISOString(), order: 'viewCount', max: 50, language: settings.language });
   if (!ids.length) return [];
   const vids = (await yt.videos(ids)).filter((v) => !v.live);
   const channels = new Map((await yt.channels([...new Set(vids.map((v) => v.ytChannelId))])).map((c) => [c.ytChannelId, c]));

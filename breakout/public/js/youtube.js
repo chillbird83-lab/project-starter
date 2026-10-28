@@ -68,6 +68,7 @@ export function mapVideo(item) {
     likes: num(item.statistics?.likeCount),
     comments: num(item.statistics?.commentCount),
     live: (item.snippet?.liveBroadcastContent ?? 'none') !== 'none',
+    lang: item.snippet?.defaultAudioLanguage || item.snippet?.defaultLanguage || '',
   };
 }
 
@@ -135,10 +136,12 @@ export function ytClient(apiKey, fetchImpl = fetch) {
       return out;
     },
     /** Video IDs matching a search (100 units). */
-    async searchVideos(q, { publishedAfter, order = 'viewCount', max = 50 } = {}) {
+    async searchVideos(q, { publishedAfter, order = 'viewCount', max = 50, language } = {}) {
       const body = await get('search', {
         part: 'id', type: 'video', q, order, maxResults: String(Math.min(50, max)),
         ...(publishedAfter ? { publishedAfter } : {}),
+        // Favours (but doesn't strictly limit to) videos in this language.
+        ...(language && language !== 'any' ? { relevanceLanguage: language === 'zh' ? 'zh-Hans' : language } : {}),
       });
       return (body.items ?? []).map((i) => i.id?.videoId).filter(Boolean);
     },

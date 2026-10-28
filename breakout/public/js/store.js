@@ -1,4 +1,5 @@
 // App state for whoever is signed in, kept in sync with the backend.
+import { LANGUAGES, defaultLanguage } from './lang.js';
 import { DEFAULT_SETTINGS } from './score.js';
 
 let backend = null;
@@ -15,6 +16,8 @@ export async function connect(b) {
   set({ ready: false });
   const data = await b.load();
   set({ ready: true, ...data, settings: sanitizeSettings(data.settings) });
+  // Settings from before the language filter: save the default so niche searches use it too.
+  if (data.settings.onboarded && !data.settings.language) await saveSettings({}).catch(() => {});
 }
 
 export function disconnect() {
@@ -31,6 +34,7 @@ export function sanitizeSettings(s = {}) {
     minViews: Math.round(n(s.minViews, 0, 1e9, 1000)),
     includeShorts: s.includeShorts !== false,
     alerts: s.alerts !== false,
+    language: LANGUAGES.some(([c]) => c === s.language) ? s.language : defaultLanguage(),
     ...(backend?.mode === 'local' ? {
       youtubeKey: String(s.youtubeKey ?? '').trim(), geminiKey: String(s.geminiKey ?? '').trim(), geminiModel: String(s.geminiModel ?? '').trim(),
     } : {}),

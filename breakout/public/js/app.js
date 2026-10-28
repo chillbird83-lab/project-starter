@@ -2,6 +2,7 @@ import { cloudBackend, loadConfig, localBackend, preferLocal, setPreferLocal } f
 import { closeSheet, confirmDialog, sheetOpen, toast } from './overlay.js';
 import { openAddChannel, openAddMenu, openChannel, openNicheEditor, openNiches, openOnboarding, openSettings, openVideo } from './sheets.js';
 import * as store from './store.js';
+import { languageName } from './lang.js';
 import { $, $$, esc } from './util.js';
 import { channelsView, loadingView, outlierList, outliersView, signInView } from './views.js';
 
@@ -61,7 +62,7 @@ const app = {
 };
 
 /** Re-checks tracked channels and re-searches niches that haven't been searched for `nicheHours`. */
-async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_NICHE_HOURS } = {}) {
+async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_NICHE_HOURS, channels: withChannels = true } = {}) {
   const { channels, niches } = store.get();
   const cutoff = Date.now() - nicheHours * 36e5;
   const dueNiches = niches.filter((n) => !n.scannedAt || Date.parse(n.scannedAt) < cutoff);
@@ -73,7 +74,7 @@ async function refreshAll({ quiet = false, staleHours = 0, nicheHours = MANUAL_N
   render();
   const done = [], errors = [];
   try {
-    if (channels.length) {
+    if (withChannels && channels.length) {
       const r = await store.refresh(undefined, { staleHours });
       if (r.channels.length) done.push(`${r.channels.length} channel${r.channels.length === 1 ? '' : 's'}`);
       errors.push(...(r.errors || []));
@@ -147,6 +148,18 @@ document.addEventListener('click', (e) => {
     case 'signin-back': signin = { step: 'email', email: signin.email }; render(); break;
     default: break;
   }
+});
+
+document.addEventListener('change', async (e) => {
+  if (e.target.dataset?.action !== 'language') return;
+  const language = e.target.value;
+  try {
+    await store.saveSettings({ language });
+  } catch (err) { toast(err.message); return; }
+  if (language === 'any') { toast('Showing all languages'); return; }
+  // Search niches again so the next results favour the new language (quota permitting).
+  toast(`Showing ${languageName(language)} videos. Searching your niches again…`);
+  refreshAll({ quiet: false, nicheHours: 0, channels: false });
 });
 
 document.addEventListener('submit', async (e) => {

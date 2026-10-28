@@ -256,3 +256,14 @@ test('a video found by two overlapping niches belongs to both', async () => {
     assert.deepEqual(w.sb.db.videos.find((v) => v.yt_video_id === 'tinyhit0001').niche_ids, [NICHE, B]);
   } finally { w.restore(); }
 });
+
+test('the Worker searches niches in the language saved in the profile', async () => {
+  const w = world({
+    niches: [{ id: NICHE, user_id: ALICE, name: 'ww2', keywords: 'ww2', created_at: '2026-01-01' }],
+    profiles: [{ user_id: ALICE, threshold: 3, min_views: 1000, include_shorts: true, alerts: true, language: 'es' }],
+  });
+  try {
+    await call('/api/niches/scan', { body: { nicheId: NICHE } });
+    assert.equal(w.yt.calls.find((u) => u.pathname.endsWith('/search')).searchParams.get('relevanceLanguage'), 'es');
+  } finally { w.restore(); }
+});

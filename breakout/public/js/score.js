@@ -11,6 +11,7 @@ export const MIN_AGE_DAYS = 0.25;
 /** Alerts are for fresh breakouts, not old videos that slowly climbed. */
 export const ALERT_MAX_AGE_DAYS = 14;
 
+/** language is left out on purpose: the app defaults it to the browser's language. */
 export const DEFAULT_SETTINGS = { threshold: 3, minViews: 1000, includeShorts: true, alerts: true };
 
 export const isShort = (v) => v.durationS > 0 && v.durationS <= SHORT_MAX_SECONDS;
