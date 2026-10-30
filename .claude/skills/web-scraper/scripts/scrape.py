@@ -132,10 +132,18 @@ async def scrape(url, render, client, browser):
     return {"url": final, **meta(html), "markdown": markdown, "html": html}
 
 
+def focus_pattern(focus):
+    """Keywords must start a word in the path: 'vs' matches /acme-vs-rival, not /devs."""
+    if not focus:
+        return None
+    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, focus)) + ")")
+
+
 async def crawl(start, max_pages, prefix, delay, render, client, browser, focus=None):
     p0 = urlparse(start)
     site = host(p0.netloc)
     rp = await load_robots(client, p0)
+    focus_re = focus_pattern(focus)
     queue, seen, pages, failed = deque([start]), {start}, [], []
     while queue and len(pages) < max_pages:
         url = queue.popleft()
@@ -149,6 +157,12 @@ async def crawl(start, max_pages, prefix, delay, render, client, browser, focus=
             failed.append({"url": url, "error": str(e)[:300]})
             await asyncio.sleep(delay)
             continue
+        if not pages:
+            p1 = urlparse(page["url"])
+            if host(p1.netloc) != site:  # start URL redirected to another domain
+                log(f"note: {site} redirects to {host(p1.netloc)}; crawling that instead")
+                site = host(p1.netloc)
+                rp = await load_robots(client, p1)
         pages.append(page)
         log(f"✓ [{len(pages)}/{max_pages}] {url}")
         for link in links(page["html"], page["url"]):
@@ -158,7 +172,7 @@ async def crawl(start, max_pages, prefix, delay, render, client, browser, focus=
             if prefix and not p.path.startswith(prefix):
                 continue
             seen.add(link)
-            if focus and any(k in p.path.lower() for k in focus):
+            if focus_re and focus_re.search(p.path.lower()):
                 queue.appendleft(link)  # priority pages jump the queue
             else:
                 queue.append(link)
@@ -182,9 +196,12 @@ def save_pages(pages, failed, out_dir):
                       "description": p["description"], "file": name})
     with open(os.path.join(out_dir, "index.json"), "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
+    failed_path = os.path.join(out_dir, "failed.json")
     if failed:
-        with open(os.path.join(out_dir, "failed.json"), "w", encoding="utf-8") as f:
+        with open(failed_path, "w", encoding="utf-8") as f:
             json.dump(failed, f, indent=2)
+    elif os.path.exists(failed_path):
+        os.remove(failed_path)  # don't leave failures from an earlier run behind
     return len(pages)
 
 
