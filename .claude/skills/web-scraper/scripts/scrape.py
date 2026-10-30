@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Lightweight Firecrawl-style scraper: URL -> clean Markdown, site crawls and multi-site batches."""
-import argparse, asyncio, json, os, re, sys
-from collections import deque
+import argparse, asyncio, heapq, itertools, json, os, re, sys
 from urllib.parse import urljoin, urldefrag, urlparse
 from urllib import robotparser
 
@@ -16,6 +15,7 @@ BLOCK_MARKERS = re.compile(
     r"just a moment|attention required|verify you are (a )?human|are you a robot|"
     r"access denied|cf-chl|captcha", re.I)
 RENDER = ["auto", "always", "never"]
+RETRY_IN_BROWSER = {403, 429, 503}  # often bot filters that a real browser gets past
 FOCUS_DEFAULT = ["pricing", "price", "plans", "features", "product", "solutions",
                  "platform", "about", "customers", "case-stud", "integrations",
                  "compare", "vs", "blog", "careers"]
@@ -29,19 +29,39 @@ def host(netloc):
     return netloc.lower().removeprefix("www.")
 
 
+def page_key(url):
+    """Treat /pricing and /pricing/, http and https, www and non-www as one page."""
+    p = urlparse(url)
+    return host(p.netloc), p.path.rstrip("/") or "/", p.query
+
+
+def short(e):
+    text = str(e).strip()
+    return text.splitlines()[0] if text else type(e).__name__
+
+
 class Browser:
     """Starts Chromium lazily, so static-only runs never need it."""
     def __init__(self):
-        self.pw = self.browser = None
+        self.pw = self.browser = self.broken = None
 
     async def page_html(self, url):
+        if self.broken:
+            raise RuntimeError(self.broken)
         if self.browser is None:
-            from playwright.async_api import async_playwright
-            self.pw = await async_playwright().start()
-            self.browser = await self.pw.chromium.launch(headless=True)
+            try:
+                from playwright.async_api import async_playwright
+                self.pw = await async_playwright().start()
+                self.browser = await self.pw.chromium.launch(headless=True)
+            except Exception as e:  # report once, then stop retrying
+                self.broken = f"browser unavailable ({short(e)})"
+                log(f"note: {self.broken}; continuing without JavaScript rendering")
+                raise RuntimeError(self.broken)
         page = await self.browser.new_page(user_agent=UA)
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if resp and resp.status >= 400:
+                raise RuntimeError(f"HTTP {resp.status}")
             try:
                 await page.wait_for_load_state("networkidle", timeout=8000)
             except Exception:
@@ -53,23 +73,39 @@ class Browser:
     async def close(self):
         if self.browser:
             await self.browser.close()
+        if self.pw:
             await self.pw.stop()
 
 
+def words(text):
+    return len(re.findall(r"[^\W\d_]{2,}", re.sub(r"\]\([^)]*\)", "]", text)))
+
+
+def full_markdown(html):
+    """Crude cleanup, then convert the whole main area."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "nav", "aside", "form", "svg"]):
+        tag.decompose()
+    for tag in soup(["header", "footer"]):  # site banner and footer, not article headers
+        if not tag.find_parent(["main", "article"]):
+            tag.decompose()
+    main = soup.find("main") or soup.find("article") or soup.body or soup
+    out = md(str(main), heading_style="ATX")
+    out = re.sub(r"!\[\]\([^)]*\)", "", out)  # images without alt text
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
 def to_markdown(html, url):
-    # Main-content extraction first (drops navs, ads, footers)
+    # Main-content extraction is cleanest for articles, but it drops pricing tables,
+    # feature grids and logo walls, so use the whole main area when it loses too much.
     out = trafilatura.extract(html, url=url, output_format="markdown",
                               include_links=True, include_tables=True,
-                              favor_recall=True)
-    if out and len(out) > 200:
+                              favor_recall=True) or ""
+    full = full_markdown(html)
+    if len(out) > 200 and words(out) >= 0.75 * words(full):
         return out
-    # Fallback: crude cleanup, then convert the main area
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "noscript", "nav", "footer",
-                     "header", "aside", "form", "svg"]):
-        tag.decompose()
-    main = soup.find("main") or soup.find("article") or soup.body or soup
-    return re.sub(r"\n{3,}", "\n\n", md(str(main), heading_style="ATX")).strip()
+    return max(full, out, key=words)
 
 
 def meta(html):
@@ -109,44 +145,61 @@ async def scrape(url, render, client, browser):
     if render != "always":
         try:
             r = await client.get(url)
-            r.raise_for_status()
-            ctype = r.headers.get("content-type", "")
-            if "html" not in ctype:
-                raise ValueError(f"not an HTML page ({ctype or 'unknown type'})")
-            final, html = str(r.url), r.text
-        except Exception as e:
-            err = e
-            if render == "never":
-                raise
+        except Exception as e:  # network error: the browser may still get through
+            err = short(e)
+        else:
+            code = r.status_code
+            if code >= 400:
+                err = f"HTTP {code}"
+                if BLOCK_MARKERS.search(r.text[:5000]):
+                    err += " (bot protection page)"
+                # 404s and the like are real errors; a browser would just render them
+                if render == "never" or code not in RETRY_IN_BROWSER:
+                    raise RuntimeError(err)
+            elif "html" not in r.headers.get("content-type", ""):
+                ctype = r.headers.get("content-type") or "unknown type"
+                raise RuntimeError(f"not an HTML page ({ctype})")
+            else:
+                final, html = str(r.url), r.text
+        if err and render == "never":
+            raise RuntimeError(err)
     thin = html is None or len(to_markdown(html, final)) < 300
     if render == "always" or (render == "auto" and thin):
         try:
             final, html = await browser.page_html(url)
         except Exception as e:
             if html is None:
-                raise RuntimeError(f"static fetch: {err}; browser: {e}")
-            log(f"note: browser render failed ({e}); using static HTML")
+                raise RuntimeError(f"static fetch: {err}; browser: {short(e)}" if err
+                                   else f"browser: {short(e)}")
+            if not browser.broken:
+                log(f"note: browser render failed ({short(e)}); using static HTML")
     markdown = to_markdown(html, final)
     if looks_blocked(html, markdown):
         raise RuntimeError("blocked by bot protection")
     return {"url": final, **meta(html), "markdown": markdown, "html": html}
 
 
-def focus_pattern(focus):
-    """Keywords must start a word in the path: 'vs' matches /acme-vs-rival, not /devs."""
-    if not focus:
-        return None
-    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, focus)) + ")")
+def priority(path, focus_res):
+    """Sort key: the earliest focus keyword in the path wins, then shallower pages.
+    Keywords must start a word: 'vs' matches /acme-vs-rival, not /devs.
+    Without focus keywords every page ties, so the crawl stays breadth-first."""
+    if not focus_res:
+        return 0, 0
+    path = path.lower()
+    rank = next((i for i, r in enumerate(focus_res) if r.search(path)), len(focus_res))
+    return rank, path.strip("/").count("/")
 
 
 async def crawl(start, max_pages, prefix, delay, render, client, browser, focus=None):
     p0 = urlparse(start)
     site = host(p0.netloc)
     rp = await load_robots(client, p0)
-    focus_re = focus_pattern(focus)
-    queue, seen, pages, failed = deque([start]), {start}, [], []
+    focus_res = [re.compile(r"(?<![a-z0-9])" + re.escape(k)) for k in focus or []]
+    order = itertools.count()  # ties keep discovery order
+    queue, seen, fetched = [(-1, 0, next(order), start)], {page_key(start)}, set()
+    pages, failed = [], []
     while queue and len(pages) < max_pages:
-        url = queue.popleft()
+        url = heapq.heappop(queue)[-1]
         if rp and not rp.can_fetch("*", url):
             log(f"robots.txt disallows {url}")
             continue
@@ -157,6 +210,10 @@ async def crawl(start, max_pages, prefix, delay, render, client, browser, focus=
             failed.append({"url": url, "error": str(e)[:300]})
             await asyncio.sleep(delay)
             continue
+        if page_key(page["url"]) in fetched:  # redirected to a page we already have
+            await asyncio.sleep(delay)
+            continue
+        fetched.add(page_key(page["url"]))
         if not pages:
             p1 = urlparse(page["url"])
             if host(p1.netloc) != site:  # start URL redirected to another domain
@@ -167,15 +224,12 @@ async def crawl(start, max_pages, prefix, delay, render, client, browser, focus=
         log(f"✓ [{len(pages)}/{max_pages}] {url}")
         for link in links(page["html"], page["url"]):
             p = urlparse(link)
-            if host(p.netloc) != site or link in seen or SKIP_EXT.search(p.path):
+            if host(p.netloc) != site or page_key(link) in seen or SKIP_EXT.search(p.path):
                 continue
             if prefix and not p.path.startswith(prefix):
                 continue
-            seen.add(link)
-            if focus_re and focus_re.search(p.path.lower()):
-                queue.appendleft(link)  # priority pages jump the queue
-            else:
-                queue.append(link)
+            seen.add(page_key(link))
+            heapq.heappush(queue, (*priority(p.path, focus_res), next(order), link))
         await asyncio.sleep(delay)
     return pages, failed
 
@@ -186,6 +240,9 @@ def as_doc(p):
 
 def save_pages(pages, failed, out_dir):
     os.makedirs(out_dir, exist_ok=True)
+    for old in os.listdir(out_dir):  # pages from an earlier run; other files are left alone
+        if re.fullmatch(r"\d{3}-.*\.md", old):
+            os.remove(os.path.join(out_dir, old))
     index = []
     for i, p in enumerate(pages):
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", urlparse(p["url"]).path).strip("-") or "index"
@@ -193,7 +250,8 @@ def save_pages(pages, failed, out_dir):
         with open(os.path.join(out_dir, name), "w", encoding="utf-8") as f:
             f.write(as_doc(p))
         index.append({"url": p["url"], "title": p["title"],
-                      "description": p["description"], "file": name})
+                      "description": p["description"],
+                      "chars": len(p["markdown"]), "file": name})
     with open(os.path.join(out_dir, "index.json"), "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
     failed_path = os.path.join(out_dir, "failed.json")

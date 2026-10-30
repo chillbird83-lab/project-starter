@@ -37,11 +37,15 @@ Several sites, one subfolder each, priority pages first:
 sites.txt has one URL or domain per line; lines starting with # are ignored.
 Default focus keywords for batch cover pricing, plans, features, product,
 solutions, about, customers, case studies, integrations, comparisons, blog
-and careers.
+and careers. Pages matching an earlier keyword in the --focus list are visited
+first, and shallower pages before deeper ones, so put the most important first.
 
 Output for each site: one .md file per page, index.json (url, title, description,
-file), and failed.json listing pages that could not be fetched and why. batch also
-writes summary.json with page and failure counts per site.
+chars, file), and failed.json listing pages that could not be fetched and why. batch
+also writes summary.json with page and failure counts per site. A page with only a
+few hundred chars probably needed JavaScript; retry it with `scrape --render always`.
+Re-running into the same folder replaces the pages, index.json and failed.json from
+the previous run.
 
 ## Defaults and limits
 
