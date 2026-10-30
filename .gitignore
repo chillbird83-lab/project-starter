@@ -15,3 +15,7 @@ build/
 # Environment files
 .env
 .env.*
+
+# Python virtual environments (e.g. the web-scraper skill)
+.venv/
+__pycache__/
