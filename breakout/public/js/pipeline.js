@@ -78,6 +78,7 @@ export const ideasPrompt = (painPoints) => `Based on these 3 unmet needs, genera
 UNMET NEEDS:
 ${painPoints}
 
+Keep each title under 70 characters, so YouTube doesn't cut it off.
 Write exactly 5 lines and nothing else, each in this form:
 1. TITLE: <video title> | THUMBNAIL: <one-sentence thumbnail concept>`;
 

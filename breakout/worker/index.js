@@ -598,10 +598,16 @@ async function telegramWebhook(request, env, ctx) {
 // Niche validation pipeline
 // ---------------------------------------------------------------------------
 
-export const WORKERS_AI_MODEL = '@cf/meta/llama-3-8b-instruct';
+/**
+ * Workers AI models, tried in order. Llama 3 8B (the original choice) was retired on 2026-05-30, so the
+ * list skips any model Cloudflare has retired or this account can't use, instead of failing.
+ */
+export const WORKERS_AI_MODELS = ['@cf/meta/llama-4-scout-17b-16e-instruct', '@cf/mistralai/mistral-small-3.1-24b-instruct', '@cf/meta/llama-3.3-70b-instruct-fp8-fast'];
 export const CLAUDE_MODEL = 'claude-opus-5-5';
-/** Llama 3 8B reads about 8K tokens: keep the comments to roughly 4K of them. */
-const SMALL_MODEL_COMMENT_CHARS = 16000;
+/** The smallest window in the list (Llama 3.3 70B, 24K tokens) still fits 10 videos × 20 comments. */
+const WORKERS_AI_COMMENT_CHARS = 60000;
+/** Workers AI errors meaning "use another model": retired (5028), not allowed (5018), no such model (5007). */
+const MODEL_GONE = /\b(5028|5018|5007)\b|deprecated|no such model|not allowed to access/i;
 const VALIDATE_CACHE_SECONDS = 6 * 3600;
 
 const isQuota = (e) => e instanceof YouTubeError && /quota|dailyLimit/i.test(`${e.reason} ${e.message}`);
@@ -678,15 +684,22 @@ async function claude(env, prompt) {
 /** One prompt → text, with Workers AI first and Claude (if ANTHROPIC_API_KEY is set) as the fallback. */
 async function complete(env, prompt) {
   if (env.AI) {
-    try {
-      const out = await env.AI.run(env.AI_MODEL || WORKERS_AI_MODEL, { messages: [{ role: 'user', content: prompt }], max_tokens: 1024 });
-      const text = String(out?.response ?? '').trim();
-      if (text) return { text, provider: 'workers-ai', model: env.AI_MODEL || WORKERS_AI_MODEL };
-      throw new Error('Workers AI returned no text.');
-    } catch (e) {
-      if (!env.ANTHROPIC_API_KEY) throw new Error(`Workers AI: ${e.message}`);
-      console.error('workers ai failed, trying Claude', e.message);
+    const models = env.AI_MODEL ? [env.AI_MODEL, ...WORKERS_AI_MODELS] : WORKERS_AI_MODELS;
+    let last = null;
+    for (const model of [...new Set(models)]) {
+      try {
+        const out = await env.AI.run(model, { messages: [{ role: 'user', content: prompt }], max_tokens: 1024 });
+        const text = String(out?.response ?? '').trim();
+        if (text) return { text, provider: 'workers-ai', model };
+        last = new Error('Workers AI returned no text.');
+      } catch (e) {
+        last = e;
+        if (!MODEL_GONE.test(e.message)) break; // a real failure (e.g. daily limit), not a missing model
+        console.error('workers ai model unavailable, trying the next', model, e.message);
+      }
     }
+    if (!env.ANTHROPIC_API_KEY) throw new Error(`Workers AI: ${last?.message}`);
+    console.error('workers ai failed, trying Claude', last?.message);
   }
   if (env.ANTHROPIC_API_KEY) return { text: await claude(env, prompt), provider: 'anthropic', model: env.ANTHROPIC_MODEL || CLAUDE_MODEL };
   throw new Error('No AI is set up on the server: add the Workers AI binding or ANTHROPIC_API_KEY.');
@@ -702,8 +715,7 @@ async function analyzeComments(request, env) {
   const yt = ytClient(access.key);
   let byVideo;
   try { byVideo = await Promise.all(ids.map((id) => yt.comments(id, COMMENTS_PER_VIDEO))); } catch (e) { return youtubeFail(e); }
-  const useClaudeOnly = !env.AI;
-  const block = commentBlock(byVideo, { maxChars: useClaudeOnly ? Infinity : SMALL_MODEL_COMMENT_CHARS });
+  const block = commentBlock(byVideo, { maxChars: env.AI ? WORKERS_AI_COMMENT_CHARS : Infinity });
   if (!block.used) return fail(422, 'These videos have no public comments to read (comments may be turned off).');
   try {
     const pain = await complete(env, painPointsPrompt(block.text));

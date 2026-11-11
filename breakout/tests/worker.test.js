@@ -490,7 +490,7 @@ test('analyze: comments → 3 pain points → 5 titles with thumbnails (Workers 
     const res = await call('/api/analyze', { body: { videoIds: ['tinyhit0001', 'breakout001', 'tinyhit0001'] } }, env({ AI }));
     const out = await res.json();
     assert.equal(res.status, 200, JSON.stringify(out));
-    assert.equal(prompts[0].model, '@cf/meta/llama-3-8b-instruct');
+    assert.equal(prompts[0].model, '@cf/meta/llama-4-scout-17b-16e-instruct');
     assert.match(prompts[0].input.messages[0].content, /^Analyze these YouTube comments\. Extract the top 3 unmet needs/);
     assert.match(prompts[0].input.messages[0].content, /Day 12 is where it clicked for me/);
     assert.match(prompts[1].input.messages[0].content, /^Based on these 3 unmet needs, generate 5 high-CTR YouTube video titles/);
@@ -500,6 +500,24 @@ test('analyze: comments → 3 pain points → 5 titles with thumbnails (Workers 
     assert.deepEqual(out.ideas[0], { title: 'Title 1', thumbnail: 'Concept 1' });
     assert.equal(out.videos, 2, 'duplicates removed');
     assert.equal(out.provider, 'workers-ai');
+  } finally { w.restore(); }
+});
+
+test('analyze: a retired Workers AI model is skipped for the next one', async () => {
+  const w = world();
+  const tried = [];
+  const AI = {
+    run: async (model, input) => {
+      tried.push(model);
+      if (model.includes('llama-4')) throw new Error('5028: @cf/meta/llama-4-scout-17b-16e-instruct was deprecated on 2027-01-01.');
+      return { response: input.messages[0].content.startsWith('Analyze') ? '- One\n- Two\n- Three' : '1. TITLE: A | THUMBNAIL: B' };
+    },
+  };
+  try {
+    const out = await (await call('/api/analyze', { body: { videoIds: ['tinyhit0001'] } }, env({ AI }))).json();
+    assert.equal(out.model, '@cf/mistralai/mistral-small-3.1-24b-instruct');
+    assert.deepEqual(out.painPoints, ['One', 'Two', 'Three']);
+    assert.equal(tried[0], '@cf/meta/llama-4-scout-17b-16e-instruct');
   } finally { w.restore(); }
 });
 

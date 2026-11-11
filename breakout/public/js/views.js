@@ -300,7 +300,7 @@ export function validateView(ctx) {
   const pain = a ? `<section class="v-box" aria-labelledby="v-pain-h">
       <div class="v-box-head"><h2 id="v-pain-h">Audience Pain Points</h2></div>
       ${a.painPoints.length ? `<ol class="v-pain">${a.painPoints.map((p) => `<li>${esc(p)}</li>`).join('')}</ol>` : `<p class="pre">${esc(a.painPointsText)}</p>`}
-      <p class="small muted">From ${a.commentsUsed}${a.commentsUsed < a.comments ? ` of ${a.comments}` : ''} comment${a.comments === 1 ? '' : 's'} on ${a.videos} outlier${a.videos === 1 ? '' : 's'}${a.commentsUsed < a.comments ? ' (the most-liked, to fit the model)' : ''} · ${a.provider === 'anthropic' ? 'Claude' : 'Workers AI'}</p>
+      <p class="small muted">From ${a.commentsUsed}${a.commentsUsed < a.comments ? ` of ${a.comments}` : ''} comment${a.comments === 1 ? '' : 's'} on ${a.videos} outlier${a.videos === 1 ? '' : 's'}${a.commentsUsed < a.comments ? ' (the most-liked, to fit the model)' : ''} · ${a.provider === 'anthropic' ? 'Claude' : 'Workers AI'}${a.model ? ` (${esc(a.model.split('/').pop())})` : ''}</p>
     </section>` : '';
   const ideas = a ? `<section class="v-box" aria-labelledby="v-ideas-h">
       <div class="v-box-head"><h2 id="v-ideas-h">Title &amp; Thumbnail Concepts</h2></div>
