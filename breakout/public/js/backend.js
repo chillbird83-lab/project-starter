@@ -23,6 +23,19 @@ const MODE_KEY = 'breakout.mode';
 const readJSON = (key) => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } };
 const writeJSON = (key, v) => { try { if (v == null) localStorage.removeItem(key); else localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } };
 
+/**
+ * The niche validation pipeline runs on the Worker. This-device mode sends its own YouTube key along
+ * (X-YouTube-Key), so it works without an account and uses that key's quota.
+ */
+async function pipelineCall(path, init = {}) {
+  let res;
+  try { res = await fetch(`api/${path}`, init); } catch { throw new Error('You’re offline. Check your connection and try again.'); }
+  if (!(res.headers.get('Content-Type') || '').includes('json')) throw new Error('The niche validator runs on the Breakout server. Open the app from its workers.dev address.');
+  const body = await res.json();
+  if (!res.ok) throw Object.assign(new Error(body.error || `Request failed (${res.status}).`), { code: body.code, status: res.status });
+  return body;
+}
+
 export const preferLocal = () => { try { return localStorage.getItem(MODE_KEY) === 'local'; } catch { return false; } };
 export const setPreferLocal = (on) => { try { if (on) localStorage.setItem(MODE_KEY, 'local'); else localStorage.removeItem(MODE_KEY); } catch { /* ignore */ } };
 
@@ -176,6 +189,10 @@ export function cloudBackend(config, { onSignedOut } = {}) {
     // The Worker builds the report from the database, so it matches the Monday Telegram message.
     summariseReport: () => api('report/summary', {}).then((r) => r.summary),
     findSimilar: (query) => api('similar', { query }).then((r) => r.similar),
+    validate: async (q) => pipelineCall(`validate?q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${await token()}` } }),
+    analyzeComments: async (videoIds) => pipelineCall('analyze', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` }, body: JSON.stringify({ videoIds }),
+    }),
 
     addChannel: (input, nicheId) => api('channels', { input, nicheId }),
     refresh: (channelId) => api('refresh', { channelId }),
@@ -312,6 +329,10 @@ export function localBackend(config) {
       await db.put('kv', summary, 'reportSummary');
       return summary;
     },
+    validate: (q) => pipelineCall(`validate?q=${encodeURIComponent(q)}`, { headers: settings.youtubeKey ? { 'X-YouTube-Key': settings.youtubeKey } : {} }),
+    analyzeComments: (videoIds) => pipelineCall('analyze', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(settings.youtubeKey ? { 'X-YouTube-Key': settings.youtubeKey } : {}) }, body: JSON.stringify({ videoIds }),
+    }),
     /** Small channels like the videos you open: a niche-style search for `query` (about 130 quota units). */
     async findSimilar(query) {
       const tracked = new Set((await db.getAll('channels')).map((c) => c.ytChannelId));

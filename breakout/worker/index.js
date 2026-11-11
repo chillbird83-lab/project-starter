@@ -6,6 +6,8 @@
 //   POST   /api/analyse             { videoId, force? } Gemini: why did this video work?
 //   POST   /api/report/summary      Gemini: what each niche's breakouts of the week share
 //   POST   /api/similar             { query } small channels like the videos you open (a niche-style search)
+//   GET    /api/validate?q=         niche validation: top 50 search results with views > subscribers × 5
+//   POST   /api/analyze             { videoIds } their comments → audience pain points → titles + thumbnails
 //   POST   /api/telegram/link       a t.me link that connects the user's Telegram chat
 //   POST   /api/telegram/unlink | /api/telegram/test
 //   POST   /api/telegram/webhook    called by Telegram (/start <code>, /stop, "Why did it work?" buttons)
@@ -20,6 +22,9 @@ import {
   channelToRow, discoveryToRow, pseudoChannel, rowToChannel, rowToNiche, rowToVideo, settingsFromProfile, videoToRow,
 } from '../public/js/rows.js';
 import { matchesLanguage } from '../public/js/lang.js';
+import {
+  COMMENTS_PER_VIDEO, cleanVideoIds, commentBlock, findOutliers, ideasPrompt, painPointsPrompt, parseBullets, parseIdeas, secondsToQuotaReset,
+} from '../public/js/pipeline.js';
 import { normaliseSummary, summaryRequest, weekStart, weeklyReport } from '../public/js/report.js';
 import { isOutlier, shouldAlert } from '../public/js/score.js';
 import { channelsFromScan } from '../public/js/similar.js';
@@ -589,6 +594,162 @@ async function telegramWebhook(request, env, ctx) {
   return json({ ok: true });
 }
 
+// ---------------------------------------------------------------------------
+// Niche validation pipeline
+// ---------------------------------------------------------------------------
+
+export const WORKERS_AI_MODEL = '@cf/meta/llama-3-8b-instruct';
+export const CLAUDE_MODEL = 'claude-opus-5-5';
+/** Llama 3 8B reads about 8K tokens: keep the comments to roughly 4K of them. */
+const SMALL_MODEL_COMMENT_CHARS = 16000;
+const VALIDATE_CACHE_SECONDS = 6 * 3600;
+
+const isQuota = (e) => e instanceof YouTubeError && /quota|dailyLimit/i.test(`${e.reason} ${e.message}`);
+
+/** YouTube failures as JSON: quota errors become 429 with Retry-After (midnight Pacific), others 502. */
+function youtubeFail(e) {
+  if (isQuota(e)) {
+    const retryAfter = secondsToQuotaReset();
+    const res = json({ error: e.message, code: 'youtube_quota', retryAfter }, 429);
+    res.headers.set('Retry-After', String(retryAfter));
+    return res;
+  }
+  if (e instanceof YouTubeError) return json({ error: e.message, code: 'youtube_error' }, e.status === 400 || e.status === 403 ? 502 : 503);
+  throw e;
+}
+
+/**
+ * Who may run the pipeline: anyone bringing their own YouTube key (X-YouTube-Key, the key from the
+ * app's this-device mode), otherwise signed-in users once accounts are set up. Returns the YouTube
+ * key to use, or a Response to send back.
+ */
+async function pipelineAccess(request, env) {
+  const own = (request.headers.get('X-YouTube-Key') || '').trim();
+  const limiter = env.PIPELINE_LIMITER;
+  if (limiter) {
+    const { success } = await limiter.limit({ key: request.headers.get('CF-Connecting-IP') || 'anon' });
+    if (!success) return fail(429, 'Too many requests. Wait a minute and try again.');
+  }
+  if (own) return { key: own.slice(0, 100) };
+  if (env.SUPABASE_URL && env.SUPABASE_ANON_KEY && !(await getUser(request, env))) return fail(401, 'Please sign in to validate niches.');
+  if (!env.YOUTUBE_API_KEY) return fail(503, 'YOUTUBE_API_KEY isn’t set on the server. Add it in Cloudflare → Workers & Pages → breakout → Settings → Variables and Secrets.');
+  return { key: env.YOUTUBE_API_KEY };
+}
+
+/** Phase 1: GET /api/validate?q=… → { query, scanned, skipped, outliers: [{ title, views, subs, multiplier, … }] } */
+async function validateNiche(request, env, url) {
+  const q = (url.searchParams.get('q') || '').replace(/\s+/g, ' ').trim();
+  if (q.length < 2 || q.length > 100) return fail(400, 'Type a niche keyword (2 to 100 characters).');
+  const access = await pipelineAccess(request, env);
+  if (access instanceof Response) return access;
+  // The same keyword within 6 hours is served from Cloudflare's cache: a search costs 100 quota units.
+  const cache = globalThis.caches?.default;
+  const cacheKey = new Request(`https://cache.breakout.internal/validate?q=${encodeURIComponent(q.toLowerCase())}`);
+  const hit = cache && await cache.match(cacheKey);
+  if (hit) return json({ ...(await hit.json()), cached: true });
+  let result;
+  try { result = await findOutliers(ytClient(access.key), q); } catch (e) { return youtubeFail(e); }
+  if (cache) await cache.put(cacheKey, new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${VALIDATE_CACHE_SECONDS}` } }));
+  return json({ ...result, cached: false });
+}
+
+/** Claude through the Messages API, with server-side fallback if the model declines. */
+async function claude(env, prompt) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2026-10-21', 'anthropic-beta': 'server-side-fallback-2026-07-01',
+    },
+    body: JSON.stringify({
+      model: env.ANTHROPIC_MODEL || CLAUDE_MODEL, max_tokens: 16000, fallbacks: 'default',
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const why = res.status === 401 ? 'check ANTHROPIC_API_KEY' : res.status === 429 ? 'rate limited, try again shortly' : body?.error?.message || `error ${res.status}`;
+    throw new Error(`Claude: ${why}`);
+  }
+  if (body.stop_reason === 'refusal') throw new Error('Claude declined to answer this one.');
+  return (body.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+}
+
+/** One prompt → text, with Workers AI first and Claude (if ANTHROPIC_API_KEY is set) as the fallback. */
+async function complete(env, prompt) {
+  if (env.AI) {
+    try {
+      const out = await env.AI.run(env.AI_MODEL || WORKERS_AI_MODEL, { messages: [{ role: 'user', content: prompt }], max_tokens: 1024 });
+      const text = String(out?.response ?? '').trim();
+      if (text) return { text, provider: 'workers-ai', model: env.AI_MODEL || WORKERS_AI_MODEL };
+      throw new Error('Workers AI returned no text.');
+    } catch (e) {
+      if (!env.ANTHROPIC_API_KEY) throw new Error(`Workers AI: ${e.message}`);
+      console.error('workers ai failed, trying Claude', e.message);
+    }
+  }
+  if (env.ANTHROPIC_API_KEY) return { text: await claude(env, prompt), provider: 'anthropic', model: env.ANTHROPIC_MODEL || CLAUDE_MODEL };
+  throw new Error('No AI is set up on the server: add the Workers AI binding or ANTHROPIC_API_KEY.');
+}
+
+/** Phase 2: POST /api/analyze { videoIds } → { painPoints, ideas: [{ title, thumbnail }], … } */
+async function analyzeComments(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const ids = cleanVideoIds(body.videoIds);
+  if (!ids.length) return fail(400, 'Send videoIds: the outlier video IDs to read comments from.');
+  const access = await pipelineAccess(request, env);
+  if (access instanceof Response) return access;
+  const yt = ytClient(access.key);
+  let byVideo;
+  try { byVideo = await Promise.all(ids.map((id) => yt.comments(id, COMMENTS_PER_VIDEO))); } catch (e) { return youtubeFail(e); }
+  const useClaudeOnly = !env.AI;
+  const block = commentBlock(byVideo, { maxChars: useClaudeOnly ? Infinity : SMALL_MODEL_COMMENT_CHARS });
+  if (!block.used) return fail(422, 'These videos have no public comments to read (comments may be turned off).');
+  try {
+    const pain = await complete(env, painPointsPrompt(block.text));
+    const ideas = await complete(env, ideasPrompt(pain.text));
+    return json({
+      painPoints: parseBullets(pain.text), painPointsText: pain.text,
+      ideas: parseIdeas(ideas.text), ideasText: ideas.text,
+      provider: ideas.provider, model: ideas.model,
+      videos: ids.length, comments: block.total, commentsUsed: block.used,
+    });
+  } catch (e) {
+    return fail(502, e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CORS: the app's own origin, APP_URL, ALLOWED_ORIGINS (comma-separated) and localhost
+// ---------------------------------------------------------------------------
+
+function allowedOrigin(request, env) {
+  const origin = request.headers.get('Origin');
+  if (!origin) return null;
+  const own = new URL(request.url).origin;
+  const listed = [env.APP_URL, ...String(env.ALLOWED_ORIGINS || '').split(',')].map((o) => o?.trim().replace(/\/+$/, '')).filter(Boolean);
+  if (origin === own || listed.includes(origin) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
+  return null;
+}
+
+function withCors(res, origin) {
+  if (!origin) return res;
+  const out = new Response(res.body, res);
+  out.headers.set('Access-Control-Allow-Origin', origin);
+  out.headers.append('Vary', 'Origin');
+  out.headers.set('Access-Control-Expose-Headers', 'Retry-After');
+  return out;
+}
+
+const preflight = (origin) => new Response(null, {
+  status: origin ? 204 : 403,
+  headers: origin ? {
+    'Access-Control-Allow-Origin': origin, Vary: 'Origin', 'Access-Control-Max-Age': '86400',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-YouTube-Key',
+  } : {},
+});
+
 async function route(request, env, ctx, url) {
   const { pathname } = url;
   const method = request.method;
@@ -600,6 +761,9 @@ async function route(request, env, ctx, url) {
       maxNiches: limits(env).maxNiches, nicheHours: limits(env).nicheHours,
     });
   }
+  // The validation pipeline needs only a YouTube key (the server's, or the caller's own).
+  if (pathname === '/api/validate' && method === 'GET') return validateNiche(request, env, url);
+  if (pathname === '/api/analyze' && method === 'POST') return analyzeComments(request, env);
   if (!cloudReady(env)) return fail(503, 'The server isn’t set up yet.');
   if (pathname === '/api/telegram/webhook' && method === 'POST') return telegramReady(env) ? telegramWebhook(request, env, ctx) : fail(503, 'Telegram isn’t set up.');
   const user = await getUser(request, env);
@@ -633,11 +797,13 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
+    const origin = allowedOrigin(request, env);
+    if (request.method === 'OPTIONS') return preflight(origin);
     try {
-      return await route(request, env, ctx, url);
+      return withCors(await route(request, env, ctx, url), origin);
     } catch (e) {
       console.error(e);
-      return fail(500, 'Something went wrong. Please try again.');
+      return withCors(fail(500, 'Something went wrong. Please try again.'), origin);
     }
   },
   async scheduled(event, env, ctx) {

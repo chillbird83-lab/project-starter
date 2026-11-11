@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import worker, { NICHE_CRON, REPORT_CRON, STATS_CRON, refreshStats, runNicheScan, runScheduled, runWeeklyReports } from '../worker/index.js';
 import { webhookSecret } from '../worker/telegram.js';
 import { fakeSupabase } from './fake-supabase.js';
-import { CH, OTHER, fakeYouTube } from './fake-youtube.js';
+import { CH, NOW as FAKE_NOW, OTHER, fakeYouTube } from './fake-youtube.js';
 
 const ALICE = '11111111-1111-4111-8111-111111111111';
 const BOB = '22222222-2222-4222-8222-222222222222';
@@ -68,6 +68,9 @@ test('config says what is on without leaking secrets', async () => {
 
 test('adding a channel scores it and treats old outliers as already seen', async () => {
   const w = world();
+  // The fake channel's videos are dated relative to NOW; the route reads the clock.
+  const realNow = Date.now;
+  Date.now = () => FAKE_NOW;
   try {
     assert.equal((await call('/api/channels', { token: 'nope.jwt', body: { input: '@morningmaker' } })).status, 401);
     const res = await call('/api/channels', { body: { input: '@morningmaker' } });
@@ -86,7 +89,7 @@ test('adding a channel scores it and treats old outliers as already seen', async
     assert.equal(capped.status, 200); // Bob has none yet
     const over = await call('/api/channels', { token: 'bob.jwt', body: { input: '@morningmaker' } }, env({ MAX_CHANNELS: '1' }));
     assert.equal(over.status, 409); // same channel → duplicate wins over the cap message
-  } finally { w.restore(); }
+  } finally { Date.now = realNow; w.restore(); }
 });
 
 test('cron checks due channels and alerts each breakout once', async () => {
@@ -419,5 +422,126 @@ test('similar channels: a search for what you open, small channels only, rate-li
     assert.deepEqual(out.similar.channels.map((c) => c.title), ['Tiny Kitchen'], 'Morning Maker has 120K subscribers: not small');
     assert.equal(w.sb.db.profiles.find((p) => p.user_id === ALICE).similar.query, 'budget meals');
     assert.equal((await call('/api/similar', { body: { query: 'budget meals' } })).status, 429);
+  } finally { w.restore(); }
+});
+
+// ---------------------------------------------------------------------------
+// Niche validation pipeline
+// ---------------------------------------------------------------------------
+
+test('validate: keeps videos with views above 5× subscribers, needs sign-in or an own key', async () => {
+  const w = world();
+  try {
+    assert.equal((await call('/api/validate?q=budget%20cooking', { method: 'GET', token: null })).status, 401);
+    assert.equal((await call('/api/validate?q=x', { method: 'GET' })).status, 400);
+    const res = await call('/api/validate?q=budget%20cooking', { method: 'GET' });
+    const out = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(out));
+    assert.equal(out.scanned, 4);
+    // Tiny Kitchen: 25,000 views on 900 subscribers. Morning Maker's 60K on 120K subscribers is not enough.
+    assert.deepEqual(out.outliers.map((o) => [o.videoId, o.views, o.subs, o.multiplier]), [['tinyhit0001', 25000, 900, 27.8]]);
+    const search = w.yt.calls.find((u) => u.pathname.endsWith('/search'));
+    assert.equal(search.searchParams.get('q'), 'budget cooking');
+    assert.equal(search.searchParams.get('maxResults'), '50');
+    assert.equal(w.yt.calls.filter((u) => u.pathname.endsWith('/videos')).length, 1, 'one batched videos call');
+    assert.equal(w.yt.calls.filter((u) => u.pathname.endsWith('/channels')).length, 1, 'one batched channels call');
+    // Bringing your own key works without signing in, and that key is used
+    w.yt.calls.length = 0;
+    assert.equal((await call('/api/validate?q=budget', { method: 'GET', token: null, headers: { 'X-YouTube-Key': 'mine' } })).status, 200);
+    assert.equal(w.yt.calls[0].searchParams.get('key'), 'mine');
+  } finally { w.restore(); }
+});
+
+test('validate: a used-up YouTube quota is a 429 with Retry-After, not a crash', async () => {
+  const sb = fakeSupabase();
+  const yt = fakeYouTube({ quotaExceeded: true });
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url.startsWith('https://sb.test/auth/v1/user')) return Response.json(TOKENS[init.headers.Authorization]);
+    if (url.startsWith('https://sb.test/')) return sb.handle(url, init);
+    return yt.fetchImpl(url, init);
+  };
+  try {
+    const res = await call('/api/validate?q=budget', { method: 'GET' });
+    const out = await res.json();
+    assert.equal(res.status, 429);
+    assert.equal(out.code, 'youtube_quota');
+    assert.match(out.error, /quota is used up/);
+    assert.ok(Number(res.headers.get('Retry-After')) > 0);
+    const an = await call('/api/analyze', { body: { videoIds: ['tinyhit0001'] } }, env({ AI: { run: async () => ({ response: '- x' }) } }));
+    assert.equal(an.status, 429, 'quota errors on comments surface too');
+  } finally { globalThis.fetch = original; }
+});
+
+test('analyze: comments → 3 pain points → 5 titles with thumbnails (Workers AI)', async () => {
+  const w = world();
+  const prompts = [];
+  const AI = {
+    run: async (model, input) => {
+      prompts.push({ model, input });
+      return prompts.length === 1
+        ? { response: 'Here are the needs:\n- **Need a plan** for busy mornings\n- Wants proof it works\n- Asks what to do on weekends' }
+        : { response: [1, 2, 3, 4, 5].map((n) => `${n}. TITLE: Title ${n} | THUMBNAIL: Concept ${n}`).join('\n') };
+    },
+  };
+  try {
+    assert.equal((await call('/api/analyze', { body: { videoIds: ['bad id'] } }, env({ AI }))).status, 400);
+    const res = await call('/api/analyze', { body: { videoIds: ['tinyhit0001', 'breakout001', 'tinyhit0001'] } }, env({ AI }));
+    const out = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(out));
+    assert.equal(prompts[0].model, '@cf/meta/llama-3-8b-instruct');
+    assert.match(prompts[0].input.messages[0].content, /^Analyze these YouTube comments\. Extract the top 3 unmet needs/);
+    assert.match(prompts[0].input.messages[0].content, /Day 12 is where it clicked for me/);
+    assert.match(prompts[1].input.messages[0].content, /^Based on these 3 unmet needs, generate 5 high-CTR YouTube video titles/);
+    assert.match(prompts[1].input.messages[0].content, /Wants proof it works/);
+    assert.deepEqual(out.painPoints, ['Need a plan for busy mornings', 'Wants proof it works', 'Asks what to do on weekends']);
+    assert.equal(out.ideas.length, 5);
+    assert.deepEqual(out.ideas[0], { title: 'Title 1', thumbnail: 'Concept 1' });
+    assert.equal(out.videos, 2, 'duplicates removed');
+    assert.equal(out.provider, 'workers-ai');
+  } finally { w.restore(); }
+});
+
+test('analyze: falls back to Claude when Workers AI fails', async () => {
+  const w = world();
+  const claudeCalls = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input) === 'https://api.anthropic.com/v1/messages') {
+      claudeCalls.push({ headers: init.headers, body: JSON.parse(init.body) });
+      const text = claudeCalls.length === 1 ? '- One\n- Two\n- Three' : '1. TITLE: A | THUMBNAIL: B';
+      return Response.json({ stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text }] });
+    }
+    return inner(input, init);
+  };
+  try {
+    const AI = { run: async () => { throw new Error('daily neurons used up'); } };
+    const out = await (await call('/api/analyze', { body: { videoIds: ['tinyhit0001'] } }, env({ AI, ANTHROPIC_API_KEY: 'sk-test' }))).json();
+    assert.deepEqual(out.painPoints, ['One', 'Two', 'Three']);
+    assert.deepEqual(out.ideas, [{ title: 'A', thumbnail: 'B' }]);
+    assert.equal(out.provider, 'anthropic');
+    assert.equal(claudeCalls[0].body.model, 'claude-opus-5-5');
+    assert.equal(claudeCalls[0].headers['x-api-key'], 'sk-test');
+    assert.equal(claudeCalls[0].headers['anthropic-version'], '2026-10-21');
+    // No AI at all → a clear error
+    const none = await call('/api/analyze', { body: { videoIds: ['tinyhit0001'] } });
+    assert.equal(none.status, 502);
+    assert.match((await none.json()).error, /No AI is set up/);
+  } finally { globalThis.fetch = inner; w.restore(); }
+});
+
+test('CORS: the app’s own origin and listed ones are allowed, others are not', async () => {
+  const w = world();
+  try {
+    const pre = await call('/api/validate', { method: 'OPTIONS', token: null, headers: { Origin: 'https://studio.example', 'Access-Control-Request-Method': 'GET' } }, env({ ALLOWED_ORIGINS: 'https://studio.example' }));
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get('Access-Control-Allow-Origin'), 'https://studio.example');
+    assert.match(pre.headers.get('Access-Control-Allow-Headers'), /X-YouTube-Key/);
+    assert.equal((await call('/api/validate', { method: 'OPTIONS', token: null, headers: { Origin: 'https://evil.example' } })).status, 403);
+    const own = await call('/api/validate?q=budget', { method: 'GET', headers: { Origin: 'https://app.test' } });
+    assert.equal(own.headers.get('Access-Control-Allow-Origin'), 'https://app.test');
+    const other = await call('/api/validate?q=budget', { method: 'GET', headers: { Origin: 'https://evil.example' } });
+    assert.equal(other.headers.get('Access-Control-Allow-Origin'), null);
   } finally { w.restore(); }
 });

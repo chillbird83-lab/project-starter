@@ -44,11 +44,13 @@ export function openAddMenu(app) {
     <div class="options">
       <button type="button" class="option primary" data-pick="niche"><span aria-hidden="true">🔭</span><b>Find outliers in a niche</b><small>From any channel. Just describe the niche.</small></button>
       <button type="button" class="option" data-pick="channel"><span aria-hidden="true">📺</span><b>Track a channel</b><small>Follow a specific competitor closely</small></button>
+      <button type="button" class="option" data-pick="validate"><span aria-hidden="true">🧪</span><b>Validate a niche</b><small>Outliers, audience pain points and video ideas for a keyword</small></button>
     </div>`, { label: 'Add' });
   el.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-pick]')?.dataset.pick;
     if (pick === 'niche') openNicheEditor(app);
     if (pick === 'channel') openAddChannel(app);
+    if (pick === 'validate') { closeSheet(); app.showTab('validate'); }
   });
 }
 

@@ -263,6 +263,68 @@ export function ideasView(ctx) {
       ${stage === 'todo' ? '<button type="button" class="btn secondary" data-action="new-idea">Add an idea</button>' : ''}</div>`}`;
 }
 
+// ---------------------------------------------------------------------------
+// Validate a niche
+// ---------------------------------------------------------------------------
+
+export const VALIDATE_STEPS = [['scan', 'Scanning YouTube…'], ['find', 'Finding Outliers…'], ['read', 'Reading Comments…'], ['ideas', 'Generating Ideas…']];
+
+/** How open a niche looks, from how many of its top videos beat 5× their channel's subscribers. */
+function verdict(r) {
+  const n = r.outliers.length;
+  if (n >= 5) return ['ok', '🔥 Strong signal', `${n} of the top ${r.scanned} videos beat 5× their channel’s subscribers: small channels are breaking out here.`];
+  if (n) return ['neutral', '👀 Some openings', `${n} of the top ${r.scanned} videos beat 5× their channel’s subscribers.`];
+  return ['warn', '🧱 Crowded', `None of the top ${r.scanned} videos beat 5× their channel’s subscribers. Big channels dominate this search.`];
+}
+
+export function validateView(ctx) {
+  const v = ctx.ui.validate;
+  const steps = v.steps ?? {};
+  const busy = v.busy;
+  const stepList = v.started ? `<ol class="v-steps" aria-label="Progress">${VALIDATE_STEPS.map(([k, label]) => {
+    const st = steps[k] || 'pending';
+    return `<li class="v-step ${st}"><span class="dot" aria-hidden="true">${st === 'done' ? '✓' : st === 'active' ? '<span class="spinner"></span>' : st === 'error' ? '!' : ''}</span>${esc(st === 'done' ? label.replace('…', '') : label)}<span class="sr-only"> (${st})</span></li>`;
+  }).join('')}</ol>` : '';
+  const r = v.result;
+  const [tone, title, line] = r ? verdict(r) : [];
+  const table = r ? `<section class="v-box" aria-labelledby="v-outliers-h">
+      <div class="v-box-head"><h2 id="v-outliers-h">Outlier videos</h2><span class="pill pill-${tone}">${title}</span></div>
+      <p class="small muted">${esc(line)}${r.skipped ? ` ${r.skipped} with hidden subscriber counts were left out.` : ''}${r.cached ? ' Saved result from the last 6 hours.' : ''}</p>
+      ${r.outliers.length ? `<div class="v-table-wrap"><table class="v-table">
+        <thead><tr><th scope="col">Title</th><th scope="col" class="num">Views</th><th scope="col" class="num">Subs</th><th scope="col" class="num">Multiplier</th></tr></thead>
+        <tbody>${r.outliers.map((o) => `<tr>
+          <td><a href="https://www.youtube.com/watch?v=${esc(o.videoId)}" target="_blank" rel="noopener" class="v-title-cell">${o.thumb ? `<img src="${esc(o.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}<span><b>${esc(o.title)}</b><small>${esc(o.channelTitle)}</small></span></a></td>
+          <td class="num">${compact(o.views)}</td><td class="num">${compact(o.subs)}</td><td class="num"><b class="mult ${heat(o.multiplier / 2)}">${o.multiplier >= 100 ? Math.round(o.multiplier) : o.multiplier}×</b></td></tr>`).join('')}</tbody></table></div>` : ''}
+    </section>` : '';
+  const a = v.analysis;
+  const pain = a ? `<section class="v-box" aria-labelledby="v-pain-h">
+      <div class="v-box-head"><h2 id="v-pain-h">Audience Pain Points</h2></div>
+      ${a.painPoints.length ? `<ol class="v-pain">${a.painPoints.map((p) => `<li>${esc(p)}</li>`).join('')}</ol>` : `<p class="pre">${esc(a.painPointsText)}</p>`}
+      <p class="small muted">From ${a.commentsUsed}${a.commentsUsed < a.comments ? ` of ${a.comments}` : ''} comment${a.comments === 1 ? '' : 's'} on ${a.videos} outlier${a.videos === 1 ? '' : 's'}${a.commentsUsed < a.comments ? ' (the most-liked, to fit the model)' : ''} · ${a.provider === 'anthropic' ? 'Claude' : 'Workers AI'}</p>
+    </section>` : '';
+  const ideas = a ? `<section class="v-box" aria-labelledby="v-ideas-h">
+      <div class="v-box-head"><h2 id="v-ideas-h">Title &amp; Thumbnail Concepts</h2></div>
+      ${a.ideas.length ? `<div class="v-ideas">${a.ideas.map((i, n) => `<div class="v-idea"><span class="v-num">${n + 1}</span>
+          <div class="grow"><p class="v-idea-title">${esc(i.title)}</p>${i.thumbnail ? `<p class="small muted">🖼 ${esc(i.thumbnail)}</p>` : ''}</div>
+          <div class="v-idea-actions"><button type="button" class="chip-btn mini" data-action="copy" data-value="${esc(i.title)}">Copy</button><button type="button" class="chip-btn mini" data-action="v-save-idea" data-value="${n}">Save</button></div></div>`).join('')}</div>`
+        : `<p class="pre">${esc(a.ideasText)}</p>`}
+    </section>` : '';
+  return `<div class="v-hero">
+      <h1 class="large-title">Validate a niche</h1>
+      <p class="subtitle">Find videos beating 5× their channel’s subscribers, read what their viewers are missing, and get video ideas that fill the gap.</p>
+      <form id="validate-form" class="v-form" role="search" novalidate>
+        <label for="v-q" class="sr-only">Niche Keyword</label>
+        <input id="v-q" type="search" maxlength="100" placeholder="Niche keyword, e.g. budget meal prep" value="${esc(v.q)}" autocomplete="off" enterkeyhint="search" ${busy ? 'disabled' : ''}>
+        <button type="submit" class="btn primary" ${busy ? 'disabled' : ''}>${busy ? 'Working…' : 'Validate'}</button>
+      </form>
+      ${r && !busy ? `<button type="button" class="link center-link small" data-action="v-add-niche">+ Track “${esc(r.query)}” as a niche</button>` : ''}
+    </div>
+    ${stepList}
+    ${v.error ? `<p class="form-error v-error" role="alert">${esc(v.error)}</p>` : ''}
+    <div class="v-results" aria-live="polite">${table}${pain}${ideas}</div>
+    ${!v.started ? '<p class="footnote">One check uses about 105 of the 10,000 free daily YouTube units, plus 1 per outlier whose comments are read.</p>' : ''}`;
+}
+
 export function signInView({ step = 'email', email = '', busy = false, error = '' }) {
   return `<div class="welcome-screen">
     <img src="icons/icon.svg" alt="" width="84" height="84" class="welcome-logo">

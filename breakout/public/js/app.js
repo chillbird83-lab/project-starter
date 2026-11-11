@@ -9,10 +9,12 @@ import { interestQuery } from './similar.js';
 import { $, $$, esc, haptic } from './util.js';
 import { videoURL } from './youtube.js';
 import {
-  channelsView, ideasView, loadingView, outlierList, outliersView, reportFor, reportView, signInView, suggestionsFor,
+  channelsView, ideasView, loadingView, outlierList, outliersView, reportFor, reportView, signInView, suggestionsFor, validateView,
 } from './views.js';
 
-const VIEWS = { outliers: outliersView, report: reportView, ideas: ideasView, channels: channelsView };
+const VIEWS = { outliers: outliersView, report: reportView, ideas: ideasView, channels: channelsView, validate: validateView };
+/** Comments are read from this many of the best outliers. */
+const ANALYZE_TOP = 10;
 const LOCAL_REFRESH_HOURS = 3;
 /** Niche searches cost ~130 quota units, so they repeat less often than channel checks. */
 const LOCAL_NICHE_HOURS = 12;
@@ -25,6 +27,7 @@ const savedFeed = (() => { try { return JSON.parse(localStorage.getItem(FEED_KEY
 const ui = {
   tab: 'outliers', niche: 'all', period: 30, kind: 'all', limit: 40, refreshing: false,
   stage: 'todo', summarising: false, findingSimilar: false,
+  validate: { q: '', started: false, busy: false, steps: {}, result: null, analysis: null, error: '' },
   sort: ['score', 'rising', 'views', 'new'].includes(savedFeed.sort) ? savedFeed.sort : 'score',
   size: ['any', '10000', '100000', '1000000'].includes(savedFeed.size) ? savedFeed.size : 'any',
 };
@@ -135,9 +138,12 @@ function render() {
   });
   navTitle.textContent = $('.large-title', view)?.textContent ?? '';
   if (sel && !sheetOpen()) $(sel, view)?.focus({ preventScroll: true });
+  if (f?.id === 'v-q' && !sheetOpen()) { const i = $('#v-q', view); if (i && !i.disabled) { i.focus({ preventScroll: true }); i.setSelectionRange(i.value.length, i.value.length); } }
 }
 
 function setTab(tab, { top = false } = {}) {
+  // The validator has its own address (…/#validate), so it can be bookmarked.
+  try { history.replaceState(null, '', tab === 'validate' ? '#validate' : location.pathname + location.search); } catch { /* ignore */ }
   if (ui.tab === tab) { if (top) render(); window.scrollTo({ top: 0, behavior: top ? 'auto' : 'smooth' }); return; }
   ui.tab = tab;
   enter = true;
@@ -177,11 +183,16 @@ document.addEventListener('click', (e) => {
     case 'track-suggested': trackSuggested(el); break;
     case 'dismiss-suggested': dismissSuggested(el.dataset.yt); break;
     case 'find-similar': findSimilar(); break;
+    case 'v-save-idea': saveValidatedIdea(Number(value), el); break;
+    case 'v-add-niche': addValidatedNiche(el); break;
     case 'use-local': setPreferLocal(true); location.reload(); break;
     case 'signin-back': signin = { step: 'email', email: signin.email }; render(); break;
     default: break;
   }
 });
+
+// Keep what's typed in the validator, so a re-render (e.g. a background refresh) doesn't wipe it.
+document.addEventListener('input', (e) => { if (e.target.id === 'v-q') ui.validate.q = e.target.value; });
 
 document.addEventListener('change', async (e) => {
   const action = e.target.dataset?.action;
@@ -204,6 +215,13 @@ document.addEventListener('change', async (e) => {
 });
 
 document.addEventListener('submit', async (e) => {
+  if (e.target.id === 'validate-form') {
+    e.preventDefault();
+    const q = $('#v-q').value.replace(/\s+/g, ' ').trim();
+    if (q.length < 2) { $('#v-q').focus(); return; }
+    runValidation(q);
+    return;
+  }
   if (e.target.id !== 'signin') return;
   e.preventDefault();
   const b = app.backend;
@@ -309,6 +327,73 @@ async function findSimilar() {
   } catch (e) { toast(e.message); } finally { ui.findingSimilar = false; render(); }
 }
 
+// ---------------------------------------------------------------------------
+// Validate a niche: /api/validate, then /api/analyze on the best outliers
+// ---------------------------------------------------------------------------
+
+let validateRun = 0;
+
+async function runValidation(q) {
+  const run = ++validateRun;
+  const v = ui.validate;
+  const step = (k, st) => { if (run === validateRun) { v.steps = { ...v.steps, [k]: st }; render(); } };
+  // The server does each call's two steps in one go; the second label shows once the first has had time.
+  const after = (ms, fn) => setTimeout(() => { if (run === validateRun && v.busy) fn(); }, ms);
+  Object.assign(v, { q, started: true, busy: true, steps: { scan: 'active' }, result: null, analysis: null, error: '' });
+  render();
+  const t1 = after(1500, () => { if (v.steps.scan === 'active') { step('scan', 'done'); step('find', 'active'); } });
+  try {
+    const result = await app.backend.validate(q);
+    if (run !== validateRun) return;
+    clearTimeout(t1);
+    v.result = result;
+    v.steps = { scan: 'done', find: 'done' };
+    if (!result.outliers.length) { v.busy = false; render(); return; }
+    v.steps.read = 'active';
+    render();
+    after(2500, () => { step('read', 'done'); step('ideas', 'active'); });
+    const analysis = await app.backend.analyzeComments(result.outliers.slice(0, ANALYZE_TOP).map((o) => o.videoId));
+    if (run !== validateRun) return;
+    v.analysis = analysis;
+    v.steps = { scan: 'done', find: 'done', read: 'done', ideas: 'done' };
+  } catch (e) {
+    if (run !== validateRun) return;
+    v.error = e.code === 'youtube_quota' ? `${e.message} Try again after that.` : e.message;
+    const active = Object.entries(v.steps).find(([, st]) => st === 'active')?.[0];
+    if (active) v.steps = { ...v.steps, [active]: 'error' };
+  } finally {
+    if (run === validateRun) { v.busy = false; render(); }
+  }
+}
+
+async function saveValidatedIdea(n, btn) {
+  const { analysis, result } = ui.validate;
+  const idea = analysis?.ideas?.[n];
+  if (!idea) return;
+  btn.disabled = true;
+  try {
+    await store.saveIdea({
+      title: idea.title, angle: idea.thumbnail ? `Thumbnail: ${idea.thumbnail}` : '', status: 'todo',
+      notes: analysis.painPoints.length ? `Audience gaps:\n${analysis.painPoints.map((p) => `• ${p}`).join('\n')}` : '',
+      sourceTitle: `Niche validation: ${result?.query ?? ''}`,
+    });
+    btn.textContent = '✓ Saved';
+    toast('Saved to your Ideas board', { actionLabel: 'View', onAction: () => { ui.stage = 'todo'; app.showTab('ideas'); } });
+  } catch (e) { btn.disabled = false; toast(e.message); }
+}
+
+async function addValidatedNiche(btn) {
+  const q = ui.validate.result?.query?.slice(0, 80);
+  if (!q) return;
+  btn.disabled = true;
+  try {
+    const n = store.get().niches.find((x) => (x.keywords || x.name).toLowerCase() === q.toLowerCase()) ?? await store.saveNiche({ name: q, keywords: q });
+    app.showNiche(n.id);
+    toast(`Tracking “${q}”. Searching for outliers…`);
+    await store.scanNiche(n.id).catch((e) => toast(e.message));
+  } catch (e) { btn.disabled = false; toast(e.message); }
+}
+
 async function removeNiche(id) {
   const n = store.get().niches.find((x) => x.id === id);
   if (!n || !await confirmDialog({ title: `Remove “${n.name}”?`, message: 'Videos found by this niche are removed. Tracked channels stay.', confirmLabel: 'Remove', destructive: true })) return;
@@ -349,6 +434,9 @@ async function openData() {
 }
 
 store.subscribe(() => render());
+
+if (location.hash === '#validate') ui.tab = 'validate';
+addEventListener('hashchange', () => { if (location.hash === '#validate' && store.get().ready) setTab('validate'); });
 
 (async () => {
   render();

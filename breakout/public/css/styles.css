@@ -593,3 +593,55 @@ a.btn { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- validate a niche ---------- */
+
+.v-hero { text-align: center; max-width: 560px; margin: 8px auto 18px; }
+.v-hero .subtitle { margin: 6px auto 18px; max-width: 46ch; }
+.v-form { display: flex; gap: 8px; }
+.v-form input { flex: 1; min-width: 0; height: 50px; border: 0; border-radius: 14px; background: var(--card); box-shadow: var(--shadow); padding: 0 16px; font-size: 17px; outline: none; -webkit-appearance: none; appearance: none; }
+.v-form input:focus-visible { outline: 3px solid color-mix(in srgb, var(--blue) 45%, transparent); }
+.v-form .btn { width: auto; flex: none; padding: 0 20px; height: 50px; margin: 0; }
+.v-steps { list-style: none; padding: 0; margin: 0 auto 16px; max-width: 560px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+@media (min-width: 560px) { .v-steps { grid-template-columns: repeat(4, 1fr); } }
+.v-step { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--card); box-shadow: var(--shadow); font-size: 13.5px; font-weight: 600; color: var(--label-2); }
+.v-step .dot { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--fill); font-size: 12px; }
+.v-step .dot .spinner { width: 14px; height: 14px; border-width: 2px; color: var(--blue); }
+.v-step.active { color: var(--label); }
+.v-step.done { color: var(--green-ink); }
+.v-step.done .dot { background: color-mix(in srgb, var(--green) 20%, transparent); }
+.v-step.error { color: var(--red-ink); }
+.v-step.error .dot { background: color-mix(in srgb, var(--red) 18%, transparent); font-weight: 800; }
+.v-error { text-align: center; margin: 0 auto 16px; max-width: 560px; }
+.v-results { display: grid; gap: 16px; }
+.v-box { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; animation: rise 0.45s var(--ease) both; min-width: 0; }
+.v-box-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.v-box h2 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.v-table-wrap { overflow-x: auto; margin: 10px -16px -4px; padding: 0 16px; }
+.v-table { width: 100%; border-collapse: collapse; font-size: 14.5px; min-width: 460px; }
+.v-table th { text-align: left; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-2); padding: 6px 8px; border-bottom: 0.5px solid var(--sep); }
+.v-table td { padding: 10px 8px; border-bottom: 0.5px solid var(--sep); vertical-align: middle; }
+.v-table tr:last-child td { border-bottom: 0; }
+.v-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.v-title-cell { display: flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; }
+.v-title-cell img { flex: none; width: 72px; height: 40px; border-radius: 8px; object-fit: cover; background: var(--fill); }
+.v-title-cell b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 600; line-height: 1.3; }
+.v-title-cell small { display: block; color: var(--label-2); font-size: 12.5px; margin-top: 2px; }
+.v-title-cell:hover b { color: var(--blue); }
+.mult { font-weight: 800; }
+.mult.mild { color: var(--orange-ink); } .mult.warm { color: #e65c00; } .mult.hot { color: var(--red-ink); }
+.v-pain { margin: 10px 0 8px; padding-left: 22px; display: grid; gap: 10px; font-size: 16px; line-height: 1.4; }
+.v-pain li::marker { font-weight: 700; color: var(--blue); }
+.v-ideas { display: grid; gap: 10px; margin-top: 10px; }
+.v-idea { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-radius: 14px; background: var(--fill); }
+.v-num { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--blue); color: #fff; font-weight: 700; font-size: 13px; }
+.v-idea-title { font-weight: 700; line-height: 1.3; margin-bottom: 3px; }
+.v-idea-actions { display: flex; flex-direction: column; gap: 6px; flex: none; }
+.pre { white-space: pre-wrap; font-size: 15px; line-height: 1.45; }
+
+@media (max-width: 520px) {
+  .v-table { min-width: 0; font-size: 13.5px; }
+  .v-title-cell img { display: none; }
+  .v-table th, .v-table td { padding-left: 5px; padding-right: 5px; }
+  .v-form .btn { padding: 0 16px; }
+}

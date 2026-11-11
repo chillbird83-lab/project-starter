@@ -167,7 +167,8 @@ export function ytClient(apiKey, fetchImpl = fetch) {
           return { text: String(c.textDisplay ?? '').slice(0, 300), likes: Number(c.likeCount ?? 0) };
         });
       } catch (e) {
-        if (e.status === 403 || e.status === 404) return [];
+        // Comments turned off or video gone: nothing to read. A quota error is a 403 too, and must surface.
+        if ((e.status === 403 || e.status === 404) && !/quota|dailyLimit/i.test(e.reason || '')) return [];
         throw e;
       }
     },

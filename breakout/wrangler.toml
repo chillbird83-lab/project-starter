@@ -1,6 +1,6 @@
 # Cloudflare Worker that serves the app from ./public and runs the API in ./worker.
 # Deploy:   npx wrangler deploy   (or the "Deploy Breakout to Cloudflare" GitHub Action)
-# Secrets:  YOUTUBE_API_KEY, GEMINI_API_KEY, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN
+# Secrets:  YOUTUBE_API_KEY, GEMINI_API_KEY, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY (optional)
 name = "breakout"
 main = "worker/index.js"
 compatibility_date = "2025-09-01"
@@ -14,6 +14,17 @@ binding = "ASSETS"
 # At :22 and :52 — re-read view counts of recent outliers for "Rising now" (1 unit per 50 videos).
 # Hourly at :41 — send the weekly Telegram reports that are due (from Monday 08:00 UTC, 4 per run).
 # The free plan allows 5 cron schedules per account; Shoebox uses the fifth.
+# Workers AI, for /api/analyze (free daily allocation). Claude is used instead when ANTHROPIC_API_KEY is set
+# and Workers AI fails or isn't bound.
+[ai]
+binding = "AI"
+
+# Per-visitor limit on /api/validate and /api/analyze: 10 requests a minute.
+[[ratelimits]]
+name = "PIPELINE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
 [triggers]
 crons = ["*/15 * * * *", "7 * * * *", "22,52 * * * *", "41 * * * *"]
 

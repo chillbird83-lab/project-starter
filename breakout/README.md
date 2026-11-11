@@ -47,6 +47,19 @@ Tap a video to **play it inside the app** (YouTube's embedded player). A few vid
 - **📺 Suggested channels:** the **Channels** tab suggests small channels (under 100K subscribers) that you don't track yet, based on the outliers you **open, save, analyse and take ideas from**. Each one says why, e.g. "You opened 3 of their videos · 2 outliers · best 14×". Tap **Track** to follow it closely, or ✕ to never see it again (undo in **Settings → Hidden suggestions**).
   - **Find more like these** searches YouTube for the words your favourite outliers share and keeps the small channels with a breakout. It works like a niche scan, so it costs about 130 quota units, and the server allows it once every 30 minutes.
 
+## 🧪 Validate a niche (pipeline)
+
+**+ → Validate a niche** (or open `…/#validate`): type a keyword and Breakout runs four steps.
+
+1. **Scanning YouTube / Finding Outliers** — `GET /api/validate?q=…` takes YouTube's top 50 search results, gets their view counts (one batched call) and their channels' subscriber counts (one batched call), and keeps videos with **views > subscribers × 5**, with `multiplier` = views ÷ subscribers. Channels that hide their subscriber count are left out. About 102 quota units; the same keyword is served from Cloudflare's cache for 6 hours.
+2. **Reading Comments / Generating Ideas** — `POST /api/analyze` with `{ "videoIds": [...] }` (up to 10, the best outliers) reads the top 20 comments of each, asks the AI for the audience's **top 3 unmet needs**, then for **5 high-CTR titles with thumbnail concepts** that fill them.
+   - **AI:** Workers AI `@cf/meta/llama-3-8b-instruct` through the `AI` binding (free daily allocation). It reads about 8K tokens, so the most-liked comments from every video are used, and the results say how many. If Workers AI fails or isn't bound and the secret `ANTHROPIC_API_KEY` is set, Claude (`claude-opus-5-5`, override with `ANTHROPIC_MODEL`) is used instead, with all comments.
+3. The verdict says how open the niche looks (5+ outliers: strong signal; none: crowded). Save any concept to the Ideas board, or track the keyword as a niche.
+
+**Keys and access:** in this-device mode the app sends your own YouTube key (`X-YouTube-Key`), so the pipeline uses your quota and needs no account. Otherwise the server's `YOUTUBE_API_KEY` is used, and once Supabase is set up only signed-in users can run it. Each visitor is limited to 10 requests a minute. A used-up YouTube quota comes back as `429` with `code: "youtube_quota"` and a `Retry-After` (midnight Pacific).
+
+**CORS:** the `/api/*` routes answer preflight requests and allow the app's own address, `APP_URL`, `ALLOWED_ORIGINS` (comma-separated) and `localhost`.
+
 ## How outliers are scored
 
 - **Tracking:** for every tracked channel, Breakout reads the latest 50 uploads.
